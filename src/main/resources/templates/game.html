@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <title>Ace's Game</title>
+    <link rel="stylesheet" th:href="@{/css/style.css?v=4}" />
+</head>
+
+<body>
+
+    <div class="game-container">
+        <header>
+            <div class="score">
+                <h1 style="margin:0; font-size:1.5rem; color:var(--accent);">Ace's</h1>
+            </div>
+            <div class="message" th:text="${state.gameMessage}">Welcome</div>
+            <div class="turn-indicator">
+                Turn: <span th:text="${state.currentPlayer.name}"
+                    style="color:var(--accent); font-weight:bold;">Player</span>
+            </div>
+
+            <!-- Skip Button (Only visible if Human Turn AND Has Drawn) -->
+            <form th:action="@{/game/skip}" method="post"
+                th:if="${state.currentPlayer.id == human.id and state.hasDrawn}" style="margin-left: 1rem;">
+                <input type="hidden" name="playerId" th:value="${human.id}" />
+                <button type="submit" style="background:#f59e0b;" class="skip-btn">Skip Turn</button>
+            </form>
+
+            <form th:action="@{/game/restart}" method="post" style="margin-left:auto;">
+                <button type="submit" class="danger-btn" onclick="return confirm('Restart game?');">Restart</button>
+            </form>
+        </header>
+
+        <!-- CPU Action Banner -->
+        <div class="cpu-action-banner" th:if="${state.lastAction != null and !state.lastAction.isEmpty()}"
+            th:text="${state.lastAction}"></div>
+
+        <div class="board">
+            <div id="poker-table">
+                <!-- Center Deck -->
+                <div class="center-deck" style="position:relative;">
+                    <!-- Bottom Facing Card (Under deck) -->
+                    <div th:if="${state.bottomFacingCard != null}" class="bottom-card"
+                        title="Bottom Card - Determins 7 Validity"
+                        style="position:absolute; top:0px; left:50px; z-index:0; opacity:0.9; transform: rotate(90deg);">
+                        <img th:src="${state.bottomFacingCard.imagePath}" class="card-img"
+                            style="width:80px; height:112px; border-radius:6px; box-shadow:0 2px 5px rgba(0,0,0,0.3);" />
+                    </div>
+
+                    <div id="deckPile"
+                        th:class="'card-slot deck deck-3d' + (${state.currentPlayer.id == human.id and !state.hasDrawn} ? '' : ' disabled')"
+                        th:onclick="${state.currentPlayer.id == human.id and !state.hasDrawn} ? 'animateDrawCard()' : ''"
+                        style="cursor: pointer; z-index:10; position:relative;">
+                        <img src="/images/cards/back.png" class="card-img" />
+                    </div>
+                    <div
+                        style="color:rgba(255,255,255,0.7); font-weight:bold; text-align:center; margin-top:5px; z-index:12; position:relative;">
+                        <div th:text="${state.drawPile.size()}">44</div>
+                        <div style="font-size:0.8rem;">Cards</div>
+                    </div>
+                    <form id="drawForm" th:action="@{/game/draw}" method="post"
+                        th:if="${state.currentPlayer.id == human.id and !state.hasDrawn}">
+                        <input type="hidden" name="playerId" th:value="${human.id}" />
+                    </form>
+                </div>
+
+                <!-- Seats - Dynamically positioned around the table -->
+                <!-- Calculate angle for each player: human is at bottom (270deg), others distributed evenly -->
+                <div th:each="p, stat : ${state.players}" th:with="humanIdx=${state.players.indexOf(human)}, 
+                              total=${state.players.size()},
+                              offset=${(stat.index - humanIdx + total) % total},
+                              angle=${90 + (offset * 360.0 / total)}"
+                    th:class="'seat' + (${p.id == state.currentPlayer.id} ? ' active-turn' : '')"
+                    th:style="'--seat-angle: ' + ${angle} + 'deg;'">
+
+                    <!-- Player Info (Name Only) -->
+                    <div class="player-info">
+                        <span th:text="${p.name}">Player</span>
+                        <span th:if="${p.id == state.currentPlayer.id}" style="color:var(--accent);">●</span>
+                    </div>
+
+                    <!-- Stack & Discard (On Table) -->
+                    <div class="stack-area">
+                        <!-- Discard Pile (Droppable) -->
+                        <div class="card-slot pile deck-3d" style="transform:scale(0.8);"
+                            title="Discard or Drop to Discard" ondragover="allowDrop(event)"
+                            ondrop="dropDiscard(event)">
+                            <div th:with="top=${p.lastDiscard}" th:remove="tag">
+                                <div class="card-container" th:if="${top != null}">
+                                    <img th:src="${top.imagePath}" class="card-img" />
+                                </div>
+                                <div th:if="${top == null}"
+                                    style="opacity:0.3; color:white; border:1px dashed #aaa; border-radius:8px;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Stack (Droppable) - Cascading Display -->
+                        <div class="card-slot stack cascading-stack" style="transform:scale(0.8);"
+                            title="Stack or Drop to Play" ondragover="allowDrop(event)" ondrop="dropPlay(event)">
+                            <!-- Show up to last 5 cards with offset -->
+                            <th:block
+                                th:with="stackSize=${p.stack.size()}, startIdx=${stackSize > 5 ? stackSize - 5 : 0}">
+                                <div th:each="i : ${#numbers.sequence(startIdx, stackSize > 0 ? stackSize - 1 : 0)}"
+                                    th:if="${stackSize > 0}" class="card-container stacked-card"
+                                    th:style="'--stack-offset:' + ${i - startIdx}">
+                                    <img th:src="${p.stack.get(i).imagePath}" class="card-img" />
+                                </div>
+                            </th:block>
+                            <div th:if="${p.stack.isEmpty()}"
+                                style="width:100%;height:100%;opacity:0.3; color:white; border:1px dashed #aaa; border-radius:8px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CPU Hands (Fanned Visual with Card Backs) -->
+                    <th:block th:unless="${p.id == human.id}">
+                        <div class="cpu-hand" th:style="'--hand-size:' + ${p.hand.size()}">
+                            <!-- Fan the cards with rotation -->
+                            <div th:each="i : ${#numbers.sequence(0, p.hand.size() > 0 ? p.hand.size() - 1 : 0)}"
+                                th:if="${p.hand.size() > 0}" class="cpu-card-back"
+                                th:style="'--fan-i:' + ${i} + '; --fan-total:' + ${p.hand.size()}">
+                            </div>
+                        </div>
+                    </th:block>
+                </div>
+            </div> <!-- End Table -->
+
+            <!-- HUMAN HAND (Fanned, Foreground, Draggable) -->
+            <!-- Give Card Prompt (7) -->
+            <div th:if="${state.sevenPassCard and state.currentPlayer.id == human.id}"
+                style="position:absolute; bottom:160px; left:50%; transform:translateX(-50%); 
+                       background:rgba(0,0,0,0.8); color:#fbbf24; padding:0.5rem 2rem; border-radius:20px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5); z-index:20;">
+                ♦ Select a card to GIVE!
+            </div>
+            <div th:each="card, stat : ${human.hand}" class="card-wrapper"
+                th:style="'--i:' + ${stat.index} + '; --total:' + ${human.hand.size()}">
+
+                <div class="card-container"
+                    th:draggable="${state.currentPlayer.id == human.id and !state.sevenPassCard}"
+                    th:data-index="${stat.index}" ondragstart="drag(event)"
+                    th:onclick="${state.sevenPassCard} ? 'selectEffect(this.getAttribute(\'data-index\'))' : ''"
+                    style="cursor: grab;"
+                    th:styleappend="${state.sevenPassCard} ? 'cursor:pointer; border:2px solid #fbbf24;' : ''">
+                    <!-- Prevent img from being dragged separately -->
+                    <img th:src="${card.imagePath}" class="card-img" draggable="false" />
+                </div>
+            </div>
+        </div>
+
+        <!-- Skip Turn Button (show when it's human's turn and they've drawn) -->
+        <div th:if="${state.currentPlayer.id == human.id and state.hasDrawn and !state.modalActive}"
+            style="position:fixed; bottom:20px; right:30px; z-index:100;">
+            <form th:action="@{/game/skip}" method="post" style="margin:0;">
+                <input type="hidden" name="playerId" th:value="${human.id}" />
+                <button type="submit"
+                    style="padding:0.8rem 1.5rem; font-size:1rem; cursor:pointer; border-radius:8px; background:linear-gradient(135deg, #6b7280, #4b5563); color:white; border:2px solid #9ca3af; box-shadow:0 4px 12px rgba(0,0,0,0.3); transition:all 0.2s ease;"
+                    onmouseover="this.style.background='linear-gradient(135deg, #f59e0b, #d97706)'; this.style.transform='scale(1.05)';"
+                    onmouseout="this.style.background='linear-gradient(135deg, #6b7280, #4b5563)'; this.style.transform='scale(1)';">
+                    ⏭️ Skip Turn
+                </button>
+            </form>
+        </div>
+
+    </div>
+
+    <!-- Effect Modal (only show for human player's turn) -->
+    <div class="modal-overlay" th:if="${state.modalActive and state.currentPlayer.pc}">
+        <div class="modal-content">
+            <!-- Dynamic Header based on Effect -->
+            <th:block th:if="${state.selectTarget}">
+                <h2 th:if="${state.giveCard}">Give a Card to...</h2>
+                <h2 th:if="${state.tradeHands}">Trade Hands with...</h2>
+                <h2 th:if="${state.stealCard}">Steal from...</h2>
+            </th:block>
+            <h2 th:unless="${state.selectTarget}" th:text="${state.gameMessage}">Make a selection</h2>
+
+            <!-- Card Selection (Queen Pick/Order, Joker) -->
+            <div class="card-select" th:if="${state.queenPick or state.queenOrder or state.jokerPick}"
+                style="display:flex; gap:1rem; justify-content:center;">
+                <div th:each="card, stat : ${state.tempBuffer}" class="card-container" th:data-index="${stat.index}"
+                    onclick="selectEffect(this.getAttribute('data-index'))"
+                    style="cursor:pointer; transform:scale(1.2); width:100px; height:140px;">
+                    <img th:src="${card.imagePath}" class="card-img" />
+                </div>
+            </div>
+
+            <!-- Target Select -->
+            <div class="target-select" th:if="${state.selectTarget}"
+                style="display:flex; flex-direction:column; gap:1rem;">
+                <div th:each="p : ${state.players}" th:unless="${p.id == human.id}">
+                    <button th:text="${p.name}" th:data-id="${p.id}"
+                        onclick="selectEffect(this.getAttribute('data-id'))"
+                        style="padding:1rem 2rem; font-size:1.2rem; cursor:pointer; border-radius:8px; background:#3b82f6; color:white; border:none;"></button>
+                </div>
+            </div>
+
+            <!-- 8 Card Source Select (3+ players) -->
+            <div class="eight-source-select" th:if="${state.eightChooseSource and eightTarget != null}"
+                style="display:flex; gap:1rem; justify-content:center; flex-wrap:wrap;">
+
+                <button th:if="${!eightTarget.hand.isEmpty()}" onclick="selectEffect('hand')"
+                    style="padding:1rem 2rem; font-size:1.1rem; cursor:pointer; border-radius:8px; background:#22c55e; color:white; border:none;">
+                    🎴 Hand (Pick a card)
+                </button>
+
+                <button th:if="${eightTarget.stack.size() > 1}" onclick="selectEffect('stack')"
+                    style="padding:1rem 2rem; font-size:1.1rem; cursor:pointer; border-radius:8px; background:#f59e0b; color:white; border:none;">
+                    📚 Stack (Top)
+                </button>
+
+                <button th:if="${!eightTarget.discardPile.isEmpty()}" onclick="selectEffect('discard')"
+                    style="padding:1rem 2rem; font-size:1.1rem; cursor:pointer; border-radius:8px; background:#ef4444; color:white; border:none;">
+                    🗑️ Discard (Top)
+                </button>
+            </div>
+
+            <!-- 8 Card Face-Down Picking -->
+            <div class="eight-pick-cards" th:if="${state.eightPickCard and eightTarget != null}"
+                style="display:flex; gap:0.8rem; justify-content:center; flex-wrap:wrap; padding:1rem;">
+                <div th:each="i : ${#numbers.sequence(0, eightTarget.hand.size() - 1)}" th:data-index="${i}"
+                    onclick="selectEffect(this.getAttribute('data-index'))"
+                    style="cursor:pointer; width:80px; height:112px; border-radius:8px; transition:all 0.2s ease; transform-origin:bottom center;"
+                    onmouseover="this.style.transform='translateY(-15px) scale(1.15)'; this.style.boxShadow='0 10px 25px rgba(255,215,0,0.4)';"
+                    onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
+                    <img src="/images/cards/back.png"
+                        style="width:100%; height:100%; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);" />
+                </div>
+            </div>
+
+            <!-- Joker Stack Value Selection -->
+            <div class="joker-value-select" th:if="${state.jokerStackValue}"
+                style="display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap; padding:1rem;">
+                <button onclick="selectEffect('THREE')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">3</button>
+                <button onclick="selectEffect('FOUR')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">4</button>
+                <button onclick="selectEffect('FIVE')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">5</button>
+                <button onclick="selectEffect('SIX')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">6</button>
+                <button onclick="selectEffect('SEVEN')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">7</button>
+                <button onclick="selectEffect('EIGHT')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">8</button>
+                <button onclick="selectEffect('NINE')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">9</button>
+                <button onclick="selectEffect('TEN')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">10</button>
+                <button onclick="selectEffect('JACK')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">J</button>
+                <button onclick="selectEffect('QUEEN')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">Q</button>
+            </div>
+
+            <div class="cancel-btn" style="margin-top:20px; color:#aaa; font-size:0.8rem;">
+                (Action Required)
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden Actions Forms -->
+    <form id="effectForm" th:action="@{/game/effect}" method="post" style="display:none;">
+        <input type="hidden" name="playerId" th:value="${human.id}" />
+        <input type="hidden" id="effectActionData" name="actionData" />
+    </form>
+
+    <form id="playForm" th:action="@{/game/play}" method="post" style="display:none;">
+        <input type="hidden" name="playerId" th:value="${human.id}" />
+        <input type="hidden" id="playCardIndex" name="cardIndex" />
+    </form>
+
+    <form id="discardForm" th:action="@{/game/discard}" method="post" style="display:none;">
+        <input type="hidden" name="playerId" th:value="${human.id}" />
+        <input type="hidden" id="discardCardIndex" name="cardIndex" />
+    </form>
+    </div>
+    </div>
+
+    <!-- Data for JavaScript -->
+    <div id="gameData" th:data-cpu-turn-pending="${state.cpuTurnPending}"
+        th:data-is-human-turn="${state.currentPlayer.id == human.id}" th:data-is-game-over="${state.gameOver}"
+        th:data-is-modal-active="${state.modalActive}" th:data-last-action="${state.lastAction}"
+        th:data-current-player-name="${state.currentPlayer.name}" style="display:none;"></div>
+
+
+
+    <script>
+        function selectEffect(data) {
+            document.getElementById('effectActionData').value = data;
+            document.getElementById('effectForm').submit();
+        }
+
+        // --- Drag and Drop Logic ---
+
+        function allowDrop(ev) {
+            ev.preventDefault(); // Default is to not allow drop
+        }
+
+        function drag(ev) {
+            // Find the closest card-container in case the image was the target (though img is now draggable=false)
+            var target = ev.target.closest('.card-container') || ev.target;
+            var index = target.getAttribute("data-index");
+
+            // Put the card index into the data transfer
+            ev.dataTransfer.setData("text/plain", index);
+            target.style.opacity = '0.5'; // Visual feedback
+        }
+
+        function dropPlay(ev) {
+            ev.preventDefault();
+            var cardIndex = ev.dataTransfer.getData("text/plain");
+            // Only submit if valid index (not null/empty)
+            if (cardIndex !== "" && cardIndex !== null && cardIndex !== "null") {
+                document.getElementById('playCardIndex').value = cardIndex;
+                document.getElementById('playForm').submit();
+            }
+        }
+
+        function dropDiscard(ev) {
+            ev.preventDefault();
+            var cardIndex = ev.dataTransfer.getData("text/plain");
+            if (cardIndex !== "" && cardIndex !== null && cardIndex !== "null") {
+                document.getElementById('discardCardIndex').value = cardIndex;
+                document.getElementById('discardForm').submit();
+            }
+        }
+
+        // Reset opacity if drag ends without drop (HTML5 event)
+        document.addEventListener("dragend", function (event) {
+            var target = event.target.closest('.card-container') || event.target;
+            if (target) target.style.opacity = "1";
+        });
+
+        // === DRAW ANIMATION ===
+        function animateDrawCard() {
+            var deck = document.getElementById('deckPile');
+            var handContainer = document.querySelector('.human-hand-container');
+            var playerId = document.querySelector('input[name="playerId"]').value;
+
+            // Fallback: just reload if elements missing
+            if (!deck || !handContainer) {
+                location.reload();
+                return;
+            }
+
+            var deckRect = deck.getBoundingClientRect();
+            var handRect = handContainer.getBoundingClientRect();
+
+            // AJAX draw to get the card info first
+            fetch('/game/draw-ajax', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'playerId=' + encodeURIComponent(playerId)
+            })
+                .then(function (response) { return response.json(); })
+                .then(function (data) {
+                    if (!data.success) {
+                        location.reload();
+                        return;
+                    }
+
+                    // Create flying card with two sides
+                    var flyingCard = document.createElement('div');
+                    flyingCard.style.cssText = 'position:fixed; width:80px; height:112px; z-index:9999; pointer-events:none; perspective:1000px;';
+                    flyingCard.style.left = deckRect.left + 'px';
+                    flyingCard.style.top = deckRect.top + 'px';
+
+                    var inner = document.createElement('div');
+                    inner.style.cssText = 'width:100%; height:100%; position:relative; transform-style:preserve-3d; transition:transform 0.6s ease-out;';
+
+                    // Back face
+                    var back = document.createElement('img');
+                    back.src = '/images/cards/back.png';
+                    back.style.cssText = 'position:absolute; width:100%; height:100%; border-radius:6px; box-shadow:0 5px 15px rgba(0,0,0,0.4); backface-visibility:hidden;';
+
+                    // Front face (actual card)
+                    var front = document.createElement('img');
+                    front.src = data.imagePath;
+                    front.style.cssText = 'position:absolute; width:100%; height:100%; border-radius:6px; box-shadow:0 5px 15px rgba(0,0,0,0.4); backface-visibility:hidden; transform:rotateY(180deg);';
+
+                    inner.appendChild(back);
+                    inner.appendChild(front);
+                    flyingCard.appendChild(inner);
+                    document.body.appendChild(flyingCard);
+
+                    // Animate: move and flip
+                    setTimeout(function () {
+                        flyingCard.style.transition = 'left 0.6s ease-out, top 0.6s ease-out';
+                        flyingCard.style.left = (handRect.left + handRect.width / 2 - 40) + 'px';
+                        flyingCard.style.top = (handRect.top + 20) + 'px';
+                        inner.style.transform = 'rotateY(180deg)';
+                    }, 50);
+
+                    // Clean up and reload to show updated state
+                    setTimeout(function () {
+                        flyingCard.remove();
+                        location.reload();
+                    }, 700);
+                })
+                .catch(function () {
+                    location.reload();
+                });
+        }
+
+        // === CPU AUTO-STEP ===
+        (function () {
+            var gameData = document.getElementById('gameData');
+            if (!gameData) return;
+
+            var cpuTurnPending = gameData.dataset.cpuTurnPending === 'true';
+            var isHumanTurn = gameData.dataset.isHumanTurn === 'true';
+            var isGameOver = gameData.dataset.isGameOver === 'true';
+            var isModalActive = gameData.dataset.isModalActive === 'true';
+            var lastAction = gameData.dataset.lastAction || '';
+            var cpuName = gameData.dataset.currentPlayerName || '';
+
+            console.log('CPU Step Check:', { cpuTurnPending, isHumanTurn, isGameOver, isModalActive, lastAction });
+
+            // Show animation if there was a CPU action
+            if (lastAction && !isHumanTurn && lastAction.includes(cpuName)) {
+                animateCpuAction(lastAction);
+            }
+
+            if (cpuTurnPending && !isHumanTurn && !isGameOver && !isModalActive) {
+                // Auto-submit CPU step after delay (with animation time)
+                setTimeout(function () {
+                    var form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = '/game/cpu-step';
+                    document.body.appendChild(form);
+                    form.submit();
+                }, 2500);
+            }
+        })();
+
+        function animateCpuAction(action) {
+            var deck = document.getElementById('deckPile');
+            var discardZone = document.querySelector('.center-discard') || document.querySelector('.discardZone');
+
+            if (!deck) return;
+
+            var deckRect = deck.getBoundingClientRect();
+
+            // Create animated card
+            var card = document.createElement('div');
+            card.style.cssText = 'position:fixed; width:60px; height:84px; z-index:9999; pointer-events:none; transition:all 0.8s ease-out;';
+            card.innerHTML = '<img src="/images/cards/back.png" style="width:100%;height:100%;border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,0.5);"/>';
+
+            if (action.includes('drew')) {
+                // Draw animation: deck -> CPU area (center)
+                card.style.left = deckRect.left + 'px';
+                card.style.top = deckRect.top + 'px';
+                document.body.appendChild(card);
+
+                setTimeout(function () {
+                    card.style.left = (window.innerWidth / 2 - 30) + 'px';
+                    card.style.top = '150px';
+                    card.style.opacity = '0';
+                    card.style.transform = 'scale(0.5)';
+                }, 50);
+
+                setTimeout(function () { card.remove(); }, 900);
+            } else if (action.includes('played') || action.includes('discarded')) {
+                // Play/Discard animation: from center down
+                card.style.left = (window.innerWidth / 2 - 30) + 'px';
+                card.style.top = '100px';
+                document.body.appendChild(card);
+
+                setTimeout(function () {
+                    card.style.left = (window.innerWidth / 2 - 30) + 'px';
+                    card.style.top = '300px';
+                    card.style.transform = 'scale(1.2)';
+                }, 50);
+
+                setTimeout(function () { card.remove(); }, 900);
+            }
+        }
+    </script>
+    </div>
+</body>
+
+</html>

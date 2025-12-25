@@ -1,0 +1,397 @@
+:root {
+    --bg-color: #1a1a1a;
+    --table-color: #35654d;
+    /* Classic Green Felt */
+    --accent: #ffd700;
+    --card-width: 100px;
+    --card-height: 140px;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #111;
+    color: white;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.game-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    /* We keep perspective for the card fanning 3D effect, but table will be flat */
+    perspective: 1000px;
+    background: radial-gradient(circle at center, #2c2c2c 0%, #000 100%);
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 100;
+    position: relative;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.board {
+    flex: 1;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    /* Prevent hand from overflowing scroll */
+}
+
+/* Flat Table */
+#poker-table {
+    width: 80%;
+    max-width: 1000px;
+    height: 60%;
+    background: var(--table-color);
+    border-radius: 200px;
+    /* Pill shape / Ellipse */
+    border: 15px solid #5d4037;
+    /* Wood rim */
+    box-shadow:
+        inset 0 0 100px rgba(0, 0, 0, 0.6),
+        0 20px 50px rgba(0, 0, 0, 0.5);
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    /* No 3D transform on table itself */
+}
+
+/* Felt Texture Effect */
+#poker-table::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 185px;
+    background-image: url('https://www.transparenttextures.com/patterns/felt.png');
+    opacity: 0.4;
+    pointer-events: none;
+}
+
+/* Center Area */
+.center-deck {
+    display: flex;
+    gap: 2rem;
+    z-index: 10;
+}
+
+/* Dynamic Seat Positioning - Players distributed evenly around ellipse */
+/* Uses CSS trigonometry with --seat-angle variable from HTML */
+.seat {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 120px;
+    height: 120px;
+    /* Position on ellipse: 55% horizontal radius, 45% vertical radius */
+    /* 270deg = bottom, 90deg = top, 0deg = right, 180deg = left */
+    left: calc(50% + cos(var(--seat-angle, 270deg)) * 55%);
+    top: calc(50% + sin(var(--seat-angle, 270deg)) * 45%);
+    transform: translate(-50%, -50%);
+}
+
+/* Player Name Label */
+.player-info {
+    background: rgba(0, 0, 0, 0.6);
+    padding: 0.2rem 0.8rem;
+    border-radius: 12px;
+    font-weight: bold;
+    text-shadow: 0 1px 2px black;
+    white-space: nowrap;
+    margin-bottom: 0.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    z-index: 20;
+}
+
+/* Cards/Decks */
+.card-slot {
+    width: var(--card-width);
+    height: var(--card-height);
+    position: relative;
+}
+
+.card-container {
+    width: 100%;
+    height: 100%;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+    border-radius: 8px;
+    transition: transform 0.2s ease;
+    background: white;
+}
+
+.card-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+    object-fit: contain;
+}
+
+.deck-3d {
+    box-shadow:
+        1px 1px 0 #999,
+        2px 2px 0 #999,
+        3px 3px 0 #999,
+        0 5px 10px rgba(0, 0, 0, 0.4);
+}
+
+.disabled {
+    filter: grayscale(100%);
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Stacks on Table */
+.stack-area {
+    display: flex;
+    gap: 10px;
+}
+
+/* Cascading Stack Display */
+.cascading-stack {
+    position: relative;
+    /* Account for the extra space needed by cascading cards */
+    margin-top: 20px;
+}
+
+.stacked-card {
+    position: absolute;
+    /* Much larger offset so cards are clearly visible underneath */
+    top: calc(var(--stack-offset, 0) * 20px);
+    left: calc(var(--stack-offset, 0) * 8px);
+    z-index: calc(var(--stack-offset, 0) + 1);
+}
+
+.cascading-stack .stacked-card:last-child {
+    position: relative;
+}
+
+/* PLAYER HAND (Fanned) */
+.human-hand-container {
+    position: absolute;
+    bottom: -40px;
+    /* Peek up from bottom */
+    left: 50%;
+    transform: translateX(-50%);
+    width: 800px;
+    height: 250px;
+    z-index: 100;
+    /* Above table */
+    pointer-events: none;
+    display: flex;
+    justify-content: center;
+    /* This container specifically has perspective for the fan */
+    perspective: 1000px;
+}
+
+.human-hand-container .card-wrapper {
+    position: absolute;
+    bottom: 0;
+    width: 130px;
+    height: 182px;
+    transform-origin: bottom center;
+    transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), z-index 0s;
+    pointer-events: auto;
+    cursor: pointer;
+
+    /* Fan Logic */
+    /* Lower arc factor to keep it cleaner */
+    transform:
+        translateX(calc((var(--i) - (var(--total) - 1) / 2) * 40px)) rotate(calc((var(--i) - (var(--total) - 1) / 2) * 5deg)) translateY(calc(abs(var(--i) - (var(--total) - 1) / 2) * 5px));
+}
+
+.human-hand-container .card-container {
+    box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.5);
+    border: 1px solid #ddd;
+}
+
+.human-hand-container .card-wrapper:hover {
+    transform: translateX(calc((var(--i) - (var(--total) - 1) / 2) * 60px)) rotate(0deg) translateY(-10px) scale(1.1);
+    z-index: 1000 !important;
+}
+
+.actions {
+    display: none;
+    transition: opacity 0.2s;
+}
+
+.human-hand-container .card-wrapper:hover .actions {
+    display: flex;
+    opacity: 1;
+}
+
+button {
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.danger-btn {
+    background: #ef4444;
+}
+
+/* CPU Hands - Fanned Display */
+.cpu-hand {
+    position: absolute;
+    bottom: -60px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 60px;
+    height: 80px;
+}
+
+.cpu-card-back {
+    --fan-spread: 8deg;
+    /* Angle between cards */
+    --fan-offset: calc((var(--fan-total, 1) - 1) / 2);
+    /* Center the fan */
+
+    width: 45px;
+    height: 65px;
+    background-image: url('/images/cards/back.png');
+    background-size: cover;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    transform-origin: bottom center;
+    transform: translateX(-50%) rotate(calc((var(--fan-i, 0) - var(--fan-offset)) * var(--fan-spread)));
+    z-index: var(--fan-i, 0);
+    box-shadow: 1px 1px 5px rgba(0, 0, 0, 0.4);
+}
+
+/* Modal styling */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 5000;
+}
+
+.modal-content {
+    background: #222;
+    padding: 2rem;
+    border-radius: 15px;
+    min-width: 300px;
+    text-align: center;
+    color: white;
+    border: 1px solid #444;
+}
+
+/* === CARD ANIMATIONS === */
+
+/* Flying card overlay for animations */
+.flying-card {
+    position: fixed;
+    width: 100px;
+    height: 140px;
+    z-index: 9999;
+    pointer-events: none;
+    transform-style: preserve-3d;
+    transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.flying-card .card-face {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    backface-visibility: hidden;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.flying-card .card-back {
+    background-image: url('/images/cards/back.png');
+    background-size: cover;
+}
+
+.flying-card .card-front {
+    transform: rotateY(180deg);
+    background: white;
+}
+
+.flying-card .card-front img {
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+}
+
+/* Flip animation */
+.flying-card.flipped {
+    transform: rotateY(180deg);
+}
+
+/* Active player highlight */
+.seat.active-turn {
+    animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+
+    0%,
+    100% {
+        filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.6));
+    }
+
+    50% {
+        filter: drop-shadow(0 0 20px rgba(255, 215, 0, 1));
+    }
+}
+
+/* CPU action message */
+.cpu-action-banner {
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.85);
+    color: var(--accent);
+    padding: 0.8rem 2rem;
+    border-radius: 25px;
+    font-weight: bold;
+    font-size: 1.1rem;
+    z-index: 1000;
+    border: 2px solid var(--accent);
+    animation: fadeInDown 0.3s ease-out;
+}
+
+@keyframes fadeInDown {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
