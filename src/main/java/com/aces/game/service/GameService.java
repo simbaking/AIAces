@@ -252,13 +252,23 @@ public class GameService {
                 // Joker value not yet set - shouldn't happen but allow for safety
                 return true;
             }
-            // Check if card is adjacent to the Joker's chosen value
+            // Check if card is adjacent to the Joker's chosen value (including backdoor)
             int diff = Math.abs(card.getRank().ordinal() - jokerValue.ordinal());
+            // Backdoor: 2 (ordinal ~1) can connect to Ace (ordinal ~12)
+            if (jokerValue == Card.Rank.TWO && card.getRank() == Card.Rank.ACE) {
+                return true;
+            }
             return diff == 1;
         }
 
         // Normal sequential check
         int diff = Math.abs(card.getRank().ordinal() - top.getRank().ordinal());
+        
+        // Backdoor rule: 2 can connect to Ace (wrap around)
+        if (top.getRank() == Card.Rank.TWO && card.getRank() == Card.Rank.ACE) {
+            return true;
+        }
+        
         return diff == 1;
     }
 
@@ -390,7 +400,17 @@ public class GameService {
             } else {
                 defaultGame.setGameMessage("Joker played! Pick a card from your discard pile.");
             }
-        } else if (card.getRank() == Card.Rank.SEVEN || card.getRank() == Card.Rank.EIGHT) {
+        } else if (card.getRank() == Card.Rank.SEVEN) {
+            // Validate 7 BEFORE showing target selection
+            if (isValidSeven(card)) {
+                defaultGame.setGameMessage("Valid 7! Select a target to sabotage.");
+            } else {
+                // 7 doesn't meet suit/color requirements - no effect
+                defaultGame.setGameMessage("7 discarded but didn't match bottom card condition. No effect.");
+                defaultGame.setEffectState(GameState.EffectState.NONE);
+                endTurn();
+            }
+        } else if (card.getRank() == Card.Rank.EIGHT) {
             defaultGame.setGameMessage("Select a target player.");
         } else if (card.getRank() == Card.Rank.TEN) {
             // Check if any player has a stack with 4+ cards
@@ -484,6 +504,8 @@ public class GameService {
                         }
 
                         if (found) {
+                            // Also remove from global discard pile to prevent duplicates on reshuffle
+                            defaultGame.getDiscardPile().remove(picked);
                             p.getHand().add(picked);
                             defaultGame.setGameMessage("Recovered " + picked.getDisplayString());
                         }
@@ -558,6 +580,8 @@ public class GameService {
                         case "discard":
                             if (!eightTarget.getDiscardPile().isEmpty()) {
                                 stolen = eightTarget.getDiscardPile().remove(eightTarget.getDiscardPile().size() - 1);
+                                // Also remove from global discard pile to prevent duplicates
+                                defaultGame.getDiscardPile().remove(stolen);
                                 sourceDesc = "discard pile";
                             }
                             break;
@@ -726,14 +750,14 @@ public class GameService {
                 // implies the effect ONLY happens if the 7 was valid according to specific
                 // rules.
                 // Since we assume the move was allowed, we check if the effect triggers.
-                Card lastDiscard = defaultGame.getDiscardPile().isEmpty() ? null
-                        : defaultGame.getDiscardPile().get(defaultGame.getDiscardPile().size() - 1);
-                // The 7 played is now at top of discard (or will be).
-                // Wait, discardAndEffect adds to discard pile THEN calls applyTargetedEffect?
-                // discardAndEffect logic:
-                // p.getHand().remove(cardIdx);
-                // p.getDiscardPile().add(card); // Wait, player has discard pile?
-                // defaultGame.getDiscardPile().add(card);
+
+                // Defensive check: ensure discard pile is not empty
+                if (defaultGame.getDiscardPile().isEmpty()) {
+                    defaultGame.setGameMessage("7 discarded but no card in discard pile. No effect.");
+                    defaultGame.setEffectState(GameState.EffectState.NONE);
+                    endTurn();
+                    break;
+                }
 
                 // We need the card itself to check.
                 // But applyTargetedEffect only gets rank.
@@ -882,6 +906,7 @@ public class GameService {
         if (!cpu.getHand().isEmpty()) {
             Card discarded = cpu.getHand().remove(0);
             cpu.getDiscardPile().add(discarded);
+            defaultGame.getDiscardPile().add(discarded); // Add to global discard for effects
 
             // Handle effects if triggered
             if (isInteractiveEffect(discarded)) {
@@ -1081,11 +1106,6 @@ public class GameService {
                 break;
             case EIGHT_PICK_CARD:
                 // Blind pick from hand (always pick index 0 for now)
-                handleInteraction(cpu.getId(), "0");
-                break;
-
-            case EIGHT_PICK_CARD:
-                // CPU picks first card blind
                 handleInteraction(cpu.getId(), "0");
                 break;
             default:

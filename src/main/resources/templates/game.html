@@ -26,10 +26,23 @@
                 <button type="submit" style="background:#f59e0b;" class="skip-btn">Skip Turn</button>
             </form>
 
-            <form th:action="@{/game/restart}" method="post" style="margin-left:auto;">
-                <button type="submit" class="danger-btn" onclick="return confirm('Restart game?');">Restart</button>
+            <form id="restartForm" th:action="@{/game/restart}" method="post" style="margin-left:auto;">
+                <button type="button" class="danger-btn" onclick="showRestartModal()">Restart</button>
             </form>
         </header>
+
+        <!-- Restart Confirmation Modal -->
+        <div id="restartModal" class="modal-overlay" style="display:none;">
+            <div class="modal-content">
+                <h2 style="margin-top:0; color:#ef4444;">⚠️ Restart Game?</h2>
+                <p>This will end the current game and start a new one.</p>
+                <div style="display:flex; gap:1rem; justify-content:center; margin-top:1.5rem;">
+                    <button onclick="hideRestartModal()" style="background:#6b7280;">Cancel</button>
+                    <button onclick="document.getElementById('restartForm').submit();" class="danger-btn">Yes,
+                        Restart</button>
+                </div>
+            </div>
+        </div>
 
         <!-- CPU Action Banner -->
         <div class="cpu-action-banner" th:if="${state.lastAction != null and !state.lastAction.isEmpty()}"
@@ -54,9 +67,9 @@
                         <img src="/images/cards/back.png" class="card-img" />
                     </div>
                     <div
-                        style="color:rgba(255,255,255,0.7); font-weight:bold; text-align:center; margin-top:5px; z-index:12; position:relative;">
-                        <div th:text="${state.drawPile.size()}">44</div>
-                        <div style="font-size:0.8rem;">Cards</div>
+                        style="position:absolute; right:-50px; top:50%; transform:translateY(-50%); color:rgba(255,255,255,0.8); font-weight:bold; text-align:center; z-index:12;">
+                        <div th:text="${state.drawPile.size()}" style="font-size:1.5rem;">44</div>
+                        <div style="font-size:0.7rem;">Cards</div>
                     </div>
                     <form id="drawForm" th:action="@{/game/draw}" method="post"
                         th:if="${state.currentPlayer.id == human.id and !state.hasDrawn}">
@@ -128,21 +141,25 @@
             <!-- HUMAN HAND (Fanned, Foreground, Draggable) -->
             <!-- Give Card Prompt (7) -->
             <div th:if="${state.sevenPassCard and state.currentPlayer.id == human.id}"
-                style="position:absolute; bottom:160px; left:50%; transform:translateX(-50%); 
-                       background:rgba(0,0,0,0.8); color:#fbbf24; padding:0.5rem 2rem; border-radius:20px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5); z-index:20;">
+                style="position:absolute; bottom:200px; left:50%; transform:translateX(-50%); 
+                       background:rgba(0,0,0,0.8); color:#fbbf24; padding:0.5rem 2rem; border-radius:20px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5); z-index:200;">
                 ♦ Select a card to GIVE!
             </div>
-            <div th:each="card, stat : ${human.hand}" class="card-wrapper"
-                th:style="'--i:' + ${stat.index} + '; --total:' + ${human.hand.size()}">
 
-                <div class="card-container"
-                    th:draggable="${state.currentPlayer.id == human.id and !state.sevenPassCard}"
-                    th:data-index="${stat.index}" ondragstart="drag(event)"
-                    th:onclick="${state.sevenPassCard} ? 'selectEffect(this.getAttribute(\'data-index\'))' : ''"
-                    style="cursor: grab;"
-                    th:styleappend="${state.sevenPassCard} ? 'cursor:pointer; border:2px solid #fbbf24;' : ''">
-                    <!-- Prevent img from being dragged separately -->
-                    <img th:src="${card.imagePath}" class="card-img" draggable="false" />
+            <!-- Human Hand Container -->
+            <div class="human-hand-container" id="humanHandContainer">
+                <div th:each="card, stat : ${human.hand}" class="card-wrapper"
+                    th:style="'--i:' + ${stat.index} + '; --total:' + ${human.hand.size()}">
+
+                    <div class="card-container"
+                        th:draggable="${state.currentPlayer.id == human.id and !state.sevenPassCard}"
+                        th:data-index="${stat.index}" ondragstart="drag(event)"
+                        th:onclick="${state.sevenPassCard} ? 'selectEffect(this.getAttribute(\'data-index\'))' : ''"
+                        style="cursor: grab;"
+                        th:styleappend="${state.sevenPassCard} ? 'cursor:pointer; border:2px solid #fbbf24;' : ''">
+                        <!-- Prevent img from being dragged separately -->
+                        <img th:src="${card.imagePath}" class="card-img" draggable="false" />
+                    </div>
                 </div>
             </div>
         </div>
@@ -164,8 +181,10 @@
     </div>
 
     <!-- Effect Modal (only show for human player's turn) -->
-    <div class="modal-overlay" th:if="${state.modalActive and state.currentPlayer.pc}">
-        <div class="modal-content">
+    <!-- When sevenPassCard is true, modal should not block the hand -->
+    <div class="modal-overlay" th:if="${state.modalActive and state.currentPlayer.pc}"
+        th:style="${state.sevenPassCard} ? 'pointer-events:none; bottom:250px; height:auto; top:auto; background:transparent;' : ''">
+        <div class="modal-content" th:style="${state.sevenPassCard} ? 'pointer-events:auto;' : ''">
             <!-- Dynamic Header based on Effect -->
             <th:block th:if="${state.selectTarget}">
                 <h2 th:if="${state.giveCard}">Give a Card to...</h2>
@@ -280,11 +299,41 @@
     <div id="gameData" th:data-cpu-turn-pending="${state.cpuTurnPending}"
         th:data-is-human-turn="${state.currentPlayer.id == human.id}" th:data-is-game-over="${state.gameOver}"
         th:data-is-modal-active="${state.modalActive}" th:data-last-action="${state.lastAction}"
-        th:data-current-player-name="${state.currentPlayer.name}" style="display:none;"></div>
+        th:data-current-player-name="${state.currentPlayer.name}"
+        th:data-winner-name="${state.winner != null ? state.winner.name : ''}"
+        th:data-winner-ace="${state.winner != null && !state.winner.stack.isEmpty() ? state.winner.stack.get(state.winner.stack.size() - 1).imagePath : ''}"
+        style="display:none;"></div>
+
+    <!-- Victory Celebration Overlay -->
+    <div id="victoryOverlay" class="victory-overlay" style="display:none;">
+        <div id="confettiContainer" class="confetti-container"></div>
+        <div class="victory-content">
+            <div class="victory-title">🎉 WINNER! 🎉</div>
+            <div id="victoryWinnerName" class="victory-winner"></div>
+            <img id="victoryAceCard" class="victory-ace" src="" alt="Winning Ace" />
+            <div class="victory-buttons">
+                <form th:action="@{/game/restart}" method="post" style="margin:0;">
+                    <button type="submit" class="victory-btn primary">🔄 Play Again</button>
+                </form>
+                <form th:action="@{/game/menu}" method="post" style="margin:0;">
+                    <button type="submit" class="victory-btn secondary">🏠 Main Menu</button>
+                </form>
+            </div>
+        </div>
+    </div>
 
 
 
     <script>
+        // Restart Modal Functions
+        function showRestartModal() {
+            document.getElementById('restartModal').style.display = 'flex';
+        }
+
+        function hideRestartModal() {
+            document.getElementById('restartModal').style.display = 'none';
+        }
+
         function selectEffect(data) {
             document.getElementById('effectActionData').value = data;
             document.getElementById('effectForm').submit();
@@ -334,17 +383,27 @@
         // === DRAW ANIMATION ===
         function animateDrawCard() {
             var deck = document.getElementById('deckPile');
-            var handContainer = document.querySelector('.human-hand-container');
-            var playerId = document.querySelector('input[name="playerId"]').value;
+            var drawForm = document.getElementById('drawForm');
 
-            // Fallback: just reload if elements missing
-            if (!deck || !handContainer) {
-                location.reload();
+            // Get playerId from the hidden form
+            var playerIdInput = drawForm ? drawForm.querySelector('input[name="playerId"]') : null;
+            var playerId = playerIdInput ? playerIdInput.value : null;
+
+            // Fallback: submit the form directly if we can't animate
+            if (!deck || !playerId) {
+                if (drawForm) {
+                    drawForm.submit();
+                } else {
+                    location.reload();
+                }
                 return;
             }
 
             var deckRect = deck.getBoundingClientRect();
-            var handRect = handContainer.getBoundingClientRect();
+
+            // Target position: center-bottom of screen where hand would be
+            var targetX = window.innerWidth / 2 - 40;
+            var targetY = window.innerHeight - 200;
 
             // AJAX draw to get the card info first
             fetch('/game/draw-ajax', {
@@ -386,8 +445,8 @@
                     // Animate: move and flip
                     setTimeout(function () {
                         flyingCard.style.transition = 'left 0.6s ease-out, top 0.6s ease-out';
-                        flyingCard.style.left = (handRect.left + handRect.width / 2 - 40) + 'px';
-                        flyingCard.style.top = (handRect.top + 20) + 'px';
+                        flyingCard.style.left = targetX + 'px';
+                        flyingCard.style.top = targetY + 'px';
                         inner.style.transform = 'rotateY(180deg)';
                     }, 50);
 
@@ -397,8 +456,14 @@
                         location.reload();
                     }, 700);
                 })
-                .catch(function () {
-                    location.reload();
+                .catch(function (err) {
+                    console.error('Draw failed:', err);
+                    // Fallback: submit form directly
+                    if (drawForm) {
+                        drawForm.submit();
+                    } else {
+                        location.reload();
+                    }
                 });
         }
 
@@ -429,7 +494,7 @@
                     form.action = '/game/cpu-step';
                     document.body.appendChild(form);
                     form.submit();
-                }, 2500);
+                }, 4000);
             }
         })();
 
@@ -475,6 +540,71 @@
                 setTimeout(function () { card.remove(); }, 900);
             }
         }
+
+        // === VICTORY CELEBRATION ===
+        function createConfetti() {
+            var container = document.getElementById('confettiContainer');
+            if (!container) return;
+
+            var colors = ['#ffd700', '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7', '#dfe6e9', '#fd79a8'];
+
+            for (var i = 0; i < 100; i++) {
+                (function (index) {
+                    setTimeout(function () {
+                        var confetti = document.createElement('div');
+                        confetti.className = 'confetti';
+                        confetti.style.left = Math.random() * 100 + '%';
+                        confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+                        confetti.style.width = (Math.random() * 10 + 5) + 'px';
+                        confetti.style.height = (Math.random() * 15 + 10) + 'px';
+                        confetti.style.animationDuration = (Math.random() * 2 + 2) + 's';
+                        confetti.style.animationDelay = (Math.random() * 0.5) + 's';
+                        container.appendChild(confetti);
+
+                        // Remove after animation
+                        setTimeout(function () {
+                            confetti.remove();
+                        }, 4000);
+                    }, index * 30);
+                })(i);
+            }
+        }
+
+        function showVictory() {
+            var gameData = document.getElementById('gameData');
+            if (!gameData) return;
+
+            var winnerName = gameData.dataset.winnerName;
+            var winnerAce = gameData.dataset.winnerAce;
+
+            if (!winnerName) return;
+
+            var overlay = document.getElementById('victoryOverlay');
+            var nameEl = document.getElementById('victoryWinnerName');
+            var aceEl = document.getElementById('victoryAceCard');
+
+            if (overlay && nameEl && aceEl) {
+                nameEl.textContent = winnerName + ' placed the Ace!';
+                aceEl.src = winnerAce || '/images/cards/ace_spades.png';
+                overlay.style.display = 'flex';
+
+                // Start confetti
+                createConfetti();
+
+                // More confetti waves
+                setTimeout(createConfetti, 1500);
+                setTimeout(createConfetti, 3000);
+            }
+        }
+
+        // Check if game is over and show victory
+        (function () {
+            var gameData = document.getElementById('gameData');
+            if (gameData && gameData.dataset.isGameOver === 'true') {
+                // Small delay for dramatic effect
+                setTimeout(showVictory, 500);
+            }
+        })();
     </script>
     </div>
 </body>
