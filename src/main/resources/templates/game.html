@@ -20,10 +20,20 @@
             </div>
 
             <!-- Skip Button (Only visible if Human Turn AND Has Drawn) -->
+            <!-- Pass/End Turn Button -->
             <form th:action="@{/game/skip}" method="post"
                 th:if="${state.currentPlayer.id == human.id and state.hasDrawn}" style="margin-left: 1rem;">
                 <input type="hidden" name="playerId" th:value="${human.id}" />
-                <button type="submit" style="background:#f59e0b;" class="skip-btn">Skip Turn</button>
+
+                <!-- If played to stack, show 'Finish Turn' -->
+                <button th:if="${state.hasPlayedToStack}" type="submit"
+                    style="background:#22c55e; padding: 0.5rem 1rem; border-radius: 8px; border: none; color: white; cursor: pointer; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                    ✅ Finish Turn
+                </button>
+
+                <!-- If NOT played to stack (stuck/skip), show 'Skip Turn' -->
+                <button th:unless="${state.hasPlayedToStack}" type="submit" style="background:#f59e0b;"
+                    class="skip-btn">Skip / Pass</button>
             </form>
 
             <form id="restartForm" th:action="@{/game/restart}" method="post" style="margin-left:auto;">
@@ -42,6 +52,11 @@
                         Restart</button>
                 </div>
             </div>
+        </div>
+
+        <!-- Tooltip for Brain Nodes -->
+        <div id="brainTooltip"
+            style="position:fixed; background:rgba(15,23,42,0.95); color:#e2e8f0; padding:12px; border-radius:8px; border:1px solid #3b82f6; font-size:0.85rem; max-width:280px; display:none; pointer-events:none; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:9999;">
         </div>
 
         <!-- CPU Action Banner -->
@@ -66,10 +81,11 @@
                         style="cursor: pointer; z-index:10; position:relative;">
                         <img src="/images/cards/back.png" class="card-img" />
                     </div>
-                    <div
-                        style="position:absolute; right:-50px; top:50%; transform:translateY(-50%); color:rgba(255,255,255,0.8); font-weight:bold; text-align:center; z-index:12;">
-                        <div th:text="${state.drawPile.size()}" style="font-size:1.5rem;">44</div>
-                        <div style="font-size:0.7rem;">Cards</div>
+                    <div style="position:absolute; right:-90px; top:50%; transform:translateY(-50%); 
+                               color:white; font-weight:bold; text-align:center; z-index:100;
+                               background:rgba(0,0,0,0.6); padding:5px 10px; border-radius:8px; pointer-events:none;">
+                        <div th:text="${state.drawPile.size()}" style="font-size:1.8rem;">44</div>
+                        <div style="font-size:0.8rem; text-transform:uppercase; letter-spacing:1px;">Cards</div>
                     </div>
                     <form id="drawForm" th:action="@{/game/draw}" method="post"
                         th:if="${state.currentPlayer.id == human.id and !state.hasDrawn}">
@@ -100,7 +116,7 @@
                             ondrop="dropDiscard(event)">
                             <div th:with="top=${p.lastDiscard}" th:remove="tag">
                                 <div class="card-container" th:if="${top != null}">
-                                    <img th:src="${top.imagePath}" class="card-img" />
+                                    <img th:src="${top.imagePath}" class="card-img" draggable="false" />
                                 </div>
                                 <div th:if="${top == null}"
                                     style="opacity:0.3; color:white; border:1px dashed #aaa; border-radius:8px;"></div>
@@ -116,7 +132,7 @@
                                 <div th:each="i : ${#numbers.sequence(startIdx, stackSize > 0 ? stackSize - 1 : 0)}"
                                     th:if="${stackSize > 0}" class="card-container stacked-card"
                                     th:style="'--stack-offset:' + ${i - startIdx}">
-                                    <img th:src="${p.stack.get(i).imagePath}" class="card-img" />
+                                    <img th:src="${p.stack.get(i).imagePath}" class="card-img" draggable="false" />
                                 </div>
                             </th:block>
                             <div th:if="${p.stack.isEmpty()}"
@@ -246,6 +262,7 @@
                 </div>
             </div>
 
+
             <!-- Joker Stack Value Selection -->
             <div class="joker-value-select" th:if="${state.jokerStackValue}"
                 style="display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap; padding:1rem;">
@@ -269,6 +286,21 @@
                     style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">J</button>
                 <button onclick="selectEffect('QUEEN')"
                     style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">Q</button>
+            </div>
+
+            <!-- Joker Choice Mode (Stack vs Hand) -->
+            <div class="joker-choice-select" th:if="${state.jokerChoiceMode}"
+                style="display:flex; gap:1.5rem; justify-content:center; padding:1rem;">
+                <button onclick="selectEffect('STACK')"
+                    style="padding:1.5rem 2rem; font-size:1.2rem; cursor:pointer; border-radius:12px; background:#f59e0b; color:white; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); transition:all 0.2s ease;">
+                    📚 Recover 2 to <b>STACK</b>
+                    <div style="font-size:0.8rem; opacity:0.8;">Must fit sequence</div>
+                </button>
+                <button onclick="selectEffect('HAND')"
+                    style="padding:1.5rem 2rem; font-size:1.2rem; cursor:pointer; border-radius:12px; background:#3b82f6; color:white; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); transition:all 0.2s ease;">
+                    ✋ Recover 1 to <b>HAND</b>
+                    <div style="font-size:0.8rem; opacity:0.8;">Any card</div>
+                </button>
             </div>
 
             <div class="cancel-btn" style="margin-top:20px; color:#aaa; font-size:0.8rem;">
@@ -358,19 +390,23 @@
         function dropPlay(ev) {
             ev.preventDefault();
             var cardIndex = ev.dataTransfer.getData("text/plain");
-            // Only submit if valid index (not null/empty)
-            if (cardIndex !== "" && cardIndex !== null && cardIndex !== "null") {
+            // Only submit if valid index (integer string)
+            if (cardIndex && !isNaN(cardIndex) && !cardIndex.includes('http')) {
                 document.getElementById('playCardIndex').value = cardIndex;
                 document.getElementById('playForm').submit();
+            } else {
+                console.warn("Ignored invalid drop data:", cardIndex);
             }
         }
 
         function dropDiscard(ev) {
             ev.preventDefault();
             var cardIndex = ev.dataTransfer.getData("text/plain");
-            if (cardIndex !== "" && cardIndex !== null && cardIndex !== "null") {
+            if (cardIndex && !isNaN(cardIndex) && !cardIndex.includes('http')) {
                 document.getElementById('discardCardIndex').value = cardIndex;
                 document.getElementById('discardForm').submit();
+            } else {
+                console.warn("Ignored invalid drop data:", cardIndex);
             }
         }
 
@@ -494,7 +530,7 @@
                     form.action = '/game/cpu-step';
                     document.body.appendChild(form);
                     form.submit();
-                }, 4000);
+                }, 6000);
             }
         })();
 
@@ -607,6 +643,621 @@
         })();
     </script>
     </div>
+
+    <!-- AI Brain Visualization Overlay -->
+    <div id="aiOverlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; 
+        background:rgba(0,0,0,0.95); z-index:2000; flex-direction:column; align-items:center;">
+
+        <div
+            style="width:90%; display:flex; justify-content:space-between; padding:20px; color:white; border-bottom:1px solid #333;">
+            <h2>🤖 AI Developer Mode <span id="aiName" style="font-size:0.8em; color:#888;">Live Neural
+                    Activation</span></h2>
+
+            <!-- Controls -->
+            <div style="display:flex; gap:20px; align-items:center;">
+                <div style="display:flex; flex-direction:column; color:#94a3b8; font-size:0.75rem;">
+                    <span>Weight Focus: <span id="expVal" style="color:#fff; font-weight:bold;">25.0</span></span>
+                    <input id="expSlider" type="range" min="1" max="50" step="0.5" value="25"
+                        style="width:100px; cursor:pointer;" oninput="updateExp(this.value)">
+                </div>
+                <div style="display:flex; gap:4px; background:#1e293b; padding:4px; border-radius:6px;">
+                    <button onclick="setStrat('ALL')" id="btn-ALL" class="strat-btn active-strat">All</button>
+                    <button onclick="setStrat(0)" id="btn-0" class="strat-btn"
+                        style="border-bottom:2px solid #ef4444;">Aggro</button>
+                    <button onclick="setStrat(1)" id="btn-1" class="strat-btn"
+                        style="border-bottom:2px solid #3b82f6;">Hoard</button>
+                    <button onclick="setStrat(2)" id="btn-2" class="strat-btn"
+                        style="border-bottom:2px solid #22c55e;">Plan</button>
+                </div>
+            </div>
+
+            <button onclick="document.getElementById('aiOverlay').style.display='none'"
+                style="padding:8px 16px; background:#ef4444; border:none; cursor:pointer; color:white; border-radius:6px; font-weight:bold;">CLOSE</button>
+        </div>
+
+        <style>
+            .strat-btn {
+                background: transparent;
+                border: none;
+                color: #64748b;
+                padding: 4px 10px;
+                cursor: pointer;
+                font-weight: bold;
+                font-size: 0.8rem;
+                border-radius: 4px;
+            }
+
+            .strat-btn:hover {
+                color: #f1f5f9;
+                background: #334155;
+            }
+
+            .active-strat {
+                background: #475569 !important;
+                color: #fff !important;
+            }
+        </style>
+
+        <div
+            style="flex-grow:1; width:100%; position:relative; display:flex; justify-content:center; align-items:center;">
+            <canvas id="brainCanvas"
+                style="width:95%; height:90%; background:#0f172a; border-radius:12px; box-shadow:0 0 30px #000;"></canvas>
+
+            <!-- Column Labels -->
+            <div
+                style="position:absolute; bottom:5%; left:5%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">
+                INPUTS</div>
+            <div
+                style="position:absolute; bottom:5%; left:25%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">
+                PROCESSING</div>
+            <div
+                style="position:absolute; bottom:5%; left:45%; color:#fbbf24; font-size:1.2em; font-weight:bold; width:10%; text-align:center;">
+                STRATEGY</div>
+            <div
+                style="position:absolute; bottom:5%; right:25%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">
+                TACTICS</div>
+            <div
+                style="position:absolute; bottom:5%; right:5%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">
+                OUTPUTS</div>
+        </div>
+    </div>
+
+    <!-- Toggle Button -->
+    <button onclick="toggleAiDebug()"
+        style="position:fixed; bottom:20px; left:20px; z-index:1000; background:#0f172a; color:#22c55e; border:1px solid #22c55e; padding:8px 15px; font-family:monospace; cursor:pointer; border-radius:4px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
+        DEV: BRAIN VIEW 🧠
+    </button>
+
+    <script th:inline="javascript">
+        /*<![CDATA[*/
+        var canvas = document.getElementById('brainCanvas');
+        var ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function toggleAiDebug() {
+            var overlay = document.getElementById('aiOverlay');
+            if (overlay.style.display === 'none') {
+                overlay.style.display = 'flex';
+                resizeCanvas();
+                fetchAiState();
+            } else {
+                overlay.style.display = 'none';
+            }
+        }
+
+        function fetchAiState() {
+            // IDs are likely "cpu1", "cpu2", etc.
+            // Try fetching cpu1 first.
+            var targetId = 'cpu1';
+
+            fetch('/ai/state/' + targetId)
+                .then(r => r.json())
+                .then(data => {
+                    // Update Name
+                    var nameEl = document.getElementById('aiName');
+                    if (nameEl) nameEl.innerText = "Brain: " + targetId.toUpperCase();
+
+                    drawBrain(data);
+                    if (document.getElementById('aiOverlay').style.display !== 'none') {
+                        setTimeout(fetchAiState, 1000);
+                    }
+                })
+                .catch(e => {
+                    console.log("No AI state for " + targetId, e);
+                    if (document.getElementById('aiOverlay').style.display !== 'none') {
+                        setTimeout(fetchAiState, 2000);
+                    }
+                });
+        }
+
+
+        var brainNodes = []; // Global storage for node hit testing
+        var labelBoxes = []; // Global storage for label hit testing
+        var lastAiData = null;
+        var weightExponent = 25.0; // Slider value (Default 25)
+        var activeStrategy = 'ALL'; // 'ALL', 0, 1, 2
+
+        function updateExp(val) {
+            weightExponent = parseFloat(val);
+            document.getElementById('expVal').innerText = weightExponent.toFixed(1);
+            if (lastAiData) drawBrain(lastAiData);
+        }
+
+        function setStrat(s) {
+            activeStrategy = s;
+            // Update UI
+            document.querySelectorAll('.strat-btn').forEach(b => b.classList.remove('active-strat'));
+            document.getElementById('btn-' + s).classList.add('active-strat');
+            if (lastAiData) drawBrain(lastAiData);
+        }
+
+        const NODE_DESCRIPTIONS = [
+            "Players: The total number of players in the game.",
+            "Pos: My current position in the turn order relative to the dealer.",
+            "Stack St: The sum of the value of all cards in every player's stack.",
+            "Disc St: The danger level of the discard pile based on recent action cards.",
+            "Hand Ct: The total number of cards currently held by all opponents.",
+            "# Decks: The number of card decks currently being used.",
+            "Pile Sz: The amount of cards remaining in the draw pile.",
+            "Bottom: The rank and suit of the bottom card of the deck."
+        ];
+
+        // === NEW VISUALIZATION LOGIC ===
+        // Color Palette for Inputs
+        const INPUT_COLORS = [
+            '#9ca3af', // 0: Players (Gray)
+            '#facc15', // 1: Pos (Yellow)
+            '#3b82f6', // 2: Stack (Blue)
+            '#a855f7', // 3: Discard (Purple)
+            '#f97316', // 4: Hand (Orange)
+            '#06b6d4', // 5: Decks (Cyan)
+            '#78350f', // 6: Pile (Brown)
+            '#ec4899', // 7: Bottom (Pink)
+            '#ef4444', // 8: Aggro Red
+            '#b91c1c', // 9: Aggro Dark Red
+            '#16a34a', // 10: Hoard Green
+            '#8b5cf6', // 11: Plan Purple
+        ];
+
+        // Describe Strategy Bottleneck (8-10)
+        NODE_DESCRIPTIONS.push("Aggro: Strategy focusing on attacking opponents.");
+        NODE_DESCRIPTIONS.push("Hoard: Strategy focusing on building your own hand.");
+        NODE_DESCRIPTIONS.push("Plan: Strategy focusing on predicting future states.");
+        // Describe Outputs (11-15)
+        NODE_DESCRIPTIONS.push("PASS: Do nothing.");
+        NODE_DESCRIPTIONS.push("STACK: Play a card to your stack.");
+        NODE_DESCRIPTIONS.push("D-SKIP: Discard a Skip Turn card.");
+        NODE_DESCRIPTIONS.push("D-ATK: Discard a pure Attack card.");
+        NODE_DESCRIPTIONS.push("D-NRM: Discard a normal card.");
+        // Describe Aggro-Specific Inputs (16-19)
+        NODE_DESCRIPTIONS.push("DistDiff: My distance-to-Ace minus avg opponent distance.");
+        NODE_DESCRIPTIONS.push("AvgOppDist: Average opponent distance to Ace.");
+        NODE_DESCRIPTIONS.push("MinDist: Smallest distance-to-Ace among all players.");
+        NODE_DESCRIPTIONS.push("ClosestPlayer: Which player is closest to winning.");
+
+        // Map 38 Inputs to 8 Visual Nodes
+        const INPUT_MAPPING = [];
+        INPUT_MAPPING[0] = 0; // Players
+        INPUT_MAPPING[1] = 1; // Pos
+        INPUT_MAPPING[2] = 2; INPUT_MAPPING[3] = 2; INPUT_MAPPING[4] = 3; INPUT_MAPPING[5] = 4; // Self
+        for (let i = 0; i < 7; i++) {
+            let b = 6 + i * 4;
+            INPUT_MAPPING[b] = 2; INPUT_MAPPING[b + 1] = 2; INPUT_MAPPING[b + 2] = 3; INPUT_MAPPING[b + 3] = 4;
+        }
+        INPUT_MAPPING[34] = 5; // Decks
+        INPUT_MAPPING[35] = 6; // Pile
+        INPUT_MAPPING[36] = 7; INPUT_MAPPING[37] = 7; // Bottom
+
+        function drawBrain(data) {
+            lastAiData = data; // Cache for redraws
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            labelBoxes = []; // Clear label boxes on redraw
+            if (!data.inputs || !data.brain) return;
+
+            var brain = data.brain;
+            var w = canvas.width;
+            var h = canvas.height;
+            var pad = 140;
+
+            var stratCount = brain.strategyLayers.length;
+            var execCount = brain.executionLayers.length;
+
+            // Stages: Inputs(0) -> Strat(1..N) -> Bot -> Exec(1..M) -> Out
+            var totalStages = 1 + stratCount + 1 + execCount + 1;
+            var stepX = (w - 2 * pad) / (totalStages - 1);
+            var getX = (i) => pad + i * stepX;
+
+            // --- NODES ---
+            var stages = [];
+
+            // Stage 0: Aggregated Inputs (8 Nodes)
+            var visualInputs = new Array(8).fill(0);
+            for (var i = 0; i < INPUT_MAPPING.length; i++) {
+                var vIdx = INPUT_MAPPING[i];
+                visualInputs[vIdx] += Math.abs(data.inputs[i] || 0);
+            }
+            var inputNodes = calculateNodes(getX(0), visualInputs, false);
+            inputNodes.forEach((n, i) => { n.descIndex = i; n.color = INPUT_COLORS[i]; });
+            brainNodes = inputNodes.slice(); // Copy for hit testing
+            stages.push(inputNodes);
+
+            // Strategy Layers
+            var currentStage = 1;
+
+            brain.strategyLayers.forEach(l => {
+                stages.push(calculateNodes(getX(currentStage++), new Array(l.neurons.length).fill(0), false));
+            });
+
+            // Bottleneck (3 nodes) - spread out vertically more
+            var bnNodes = calculateNodes(getX(currentStage++), data.strategy, true, null, 80);
+            bnNodes.forEach((n, i) => { n.descIndex = 8 + i; });
+            brainNodes = brainNodes.concat(bnNodes);
+            stages.push(bnNodes);
+
+            // Aggro-Specific Input Nodes (4 nodes) - positioned ABOVE everything
+            var aggroX = getX(stratCount + 1) - 60; // Near bottleneck
+            var aggroInputVals = [
+                Math.abs(data.inputs[38] || 0),
+                Math.abs(data.inputs[39] || 0),
+                Math.abs(data.inputs[40] || 0),
+                Math.abs(data.inputs[41] || 0)
+            ];
+            // Position at top of canvas with horizontal spread
+            var aggroNodes = [];
+            var aggroTopY = 40; // Near top
+            var aggroSpacing = 35;
+            for (var ai = 0; ai < 4; ai++) {
+                aggroNodes.push({
+                    x: aggroX + ai * aggroSpacing,
+                    y: aggroTopY,
+                    val: aggroInputVals[ai],
+                    isKey: false
+                });
+            }
+            aggroNodes[0].descIndex = 16; aggroNodes[0].color = '#ef4444'; // DistDiff
+            aggroNodes[1].descIndex = 17; aggroNodes[1].color = '#dc2626'; // AvgOppDist
+            aggroNodes[2].descIndex = 18; aggroNodes[2].color = '#b91c1c'; // MinDist
+            aggroNodes[3].descIndex = 19; aggroNodes[3].color = '#991b1b'; // ClosestPlayer
+            brainNodes = brainNodes.concat(aggroNodes);
+
+            // Exec Layers
+            brain.executionLayers.forEach(l => {
+                stages.push(calculateNodes(getX(currentStage++), new Array(l.neurons.length).fill(0), false));
+            });
+
+            // Output (5 Nodes)
+            var outNodes = calculateNodes(getX(currentStage++), data.outputs, true);
+            outNodes.forEach((n, i) => { n.descIndex = 11 + i; });
+            brainNodes = brainNodes.concat(outNodes);
+            stages.push(outNodes);
+
+            // --- CONNECTIONS ---
+            // 1. Inputs -> Strat 0
+            var s0Filter = activeStrategy !== 'ALL' ? createFilter(brain.strategyLayers[0].neurons.length, activeStrategy) : null;
+            drawAggregatedLayerWeights(brain.strategyLayers[0], stages[0], stages[1], s0Filter);
+
+            // 2. Strat -> Strat
+            var sIdx = 1;
+            for (var i = 1; i < stratCount; i++) {
+                var flt = activeStrategy !== 'ALL' ? createFilter(brain.strategyLayers[i].neurons.length, activeStrategy) : null;
+                drawLayerWeights(brain.strategyLayers[i], stages[sIdx], stages[sIdx + 1], flt, true);
+                sIdx++;
+            }
+
+            // 3. Strat -> Bottleneck (first 32 weights)
+            var bnLayer = brain.strategyBottleneck;
+            if (activeStrategy === 'ALL') {
+                drawLayerWeights(bnLayer, stages[sIdx], stages[sIdx + 1], null, true);
+            } else {
+                drawLayerWeights(bnLayer, stages[sIdx], stages[sIdx + 1], [activeStrategy], true);
+            }
+
+            // 3b. Aggro Inputs -> Aggro Bottleneck ONLY
+            // Draw connections from 4 Aggro nodes to just the Aggro node (bnNodes[0])
+            var aggroWeights = bnLayer.neurons[0].weights.slice(32, 36);
+            if (activeStrategy === 'ALL' || activeStrategy === 0) {
+                aggroNodes.forEach((an, ai) => {
+                    var w = aggroWeights[ai] || 0;
+                    drawSingleLine(an, bnNodes[0], w, aggroNodes[ai].color);
+                });
+            }
+            sIdx++;
+
+            // 4. Bottleneck + Inputs -> Exec 0
+            var execL0 = brain.executionLayers[0];
+            var targetPos = stages[sIdx + 1];
+            var bottleneckPos = stages[sIdx];
+            var inputsPos = stages[0];
+
+            var bnSourceIndices = (activeStrategy === 'ALL') ? [0, 1, 2] : [activeStrategy];
+            drawComplexWeights(execL0, targetPos, [
+                { sourceNodes: bottleneckPos, startIndex: 0, count: 3, colors: ['#ef4444', '#3b82f6', '#22c55e'], filterIndices: bnSourceIndices },
+                { sourceNodes: inputsPos, startIndex: 3, count: 38, isAggregated: true }
+            ]);
+            sIdx++;
+
+            // 5. Exec -> Exec
+            for (var i = 1; i < execCount; i++) {
+                drawLayerWeights(brain.executionLayers[i], stages[sIdx], stages[sIdx + 1]);
+                sIdx++;
+            }
+
+            // 6. Exec -> Out
+            drawLayerWeights(brain.outputLayer, stages[sIdx], outNodes);
+
+            // --- DRAW NODES ---
+            stages.forEach((nodes, stgIdx) => {
+                nodes.forEach((n, nIdx) => {
+                    drawNodeCircle(n, stgIdx, stages.length);
+                });
+            });
+            // Draw Aggro input nodes
+            aggroNodes.forEach(n => drawNodeCircle(n, -1, 0));
+
+            function drawNodeCircle(n, stgIdx, maxStg) {
+                ctx.beginPath();
+                var size = n.isKey ? 8 : (n.descIndex !== undefined ? 5 : 2);
+                ctx.arc(n.x, n.y, size, 0, 2 * Math.PI);
+                if (n.color) ctx.fillStyle = n.color;
+                else if (n.descIndex >= 11 && n.descIndex <= 15) ctx.fillStyle = '#22c55e'; // Output
+                else if (n.descIndex >= 8 && n.descIndex <= 10) { // Bottleneck
+                    var cols = ['#ef4444', '#3b82f6', '#22c55e'];
+                    ctx.fillStyle = cols[n.descIndex - 8];
+                } else ctx.fillStyle = '#334155';
+
+                ctx.fill();
+                if (n.descIndex !== undefined) {
+                    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+                } else {
+                    ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 0.5; ctx.stroke();
+                }
+            }
+
+            // Labels
+            var inLabels = ["Plrs", "Pos", "Stk", "Dsc", "Hnd", "Dck", "Pil", "Btm"];
+            drawNodeLabels(inputNodes, inLabels, -30, 4, "right");
+            ctx.fillStyle = '#fff'; ctx.fillText("Inputs", stages[0][0].x, stages[0][0].y - 30);
+
+            drawNodeLabels(bnNodes, ["Aggro", "Hoard", "Plan"], 0, -25, "center");
+            ctx.fillText("Strategy", bnNodes[0].x, bnNodes[0].y - 40);
+
+            var outputLabels = ["PASS", "STACK", "D-SKIP", "D-ATK", "D-NRM"];
+            drawNodeLabels(outNodes, outputLabels, 15, 0, "left");
+            ctx.fillText("Outputs", outNodes[0].x, outNodes[0].y - 30);
+
+            // Aggro input labels (positioned horizontally at top)
+            aggroNodes.forEach((n, i) => {
+                var labels = ["Diff", "Opp", "Min", "Who"];
+                ctx.fillStyle = n.color;
+                ctx.textAlign = "center";
+                ctx.fillText(labels[i], n.x, n.y + 20);
+            });
+            ctx.fillStyle = '#ef4444';
+            ctx.textAlign = "center";
+            ctx.fillText("Aggro Inputs", aggroNodes[1].x + 15, aggroNodes[0].y - 10);
+
+        }
+
+        function createFilter(count, strategy) {
+            var f = [];
+            for (var n = 0; n < count; n++) if (n % 3 == strategy) f.push(n);
+            return f;
+        }
+
+        function calculateNodes(x, values, isKey, startY = null, spacing = null) {
+            var nodes = [];
+            var count = values.length;
+            var canvasH = canvas.height;
+            var margin = 60; // Top/bottom margin
+            var availableH = canvasH - 2 * margin;
+
+            // Calculate gap: fit all nodes within available height
+            var gap = spacing || Math.min(25, availableH / Math.max(count, 1));
+            var totalH = count * gap;
+            var actualStartY = startY !== null ? startY : margin + (availableH - totalH) / 2 + gap / 2;
+
+            for (var i = 0; i < count; i++) {
+                var node = { x: x, y: actualStartY + i * gap, val: values[i], isKey: isKey };
+                nodes.push(node);
+            }
+            return nodes;
+        }
+
+        function drawLayerWeights(layer, sourceNodes, targetNodes, targetFilter = null, colorizeSources = false) {
+            targetNodes.forEach((tNode, tIdx) => {
+                // If filtering targets, skip if not in list
+                if (targetFilter && !targetFilter.includes(tIdx)) return;
+
+                var neuron = layer.neurons[tIdx];
+                if (!neuron) return;
+                neuron.weights.forEach((w, sIdx) => {
+                    var sNode = sourceNodes[sIdx];
+                    if (sNode) {
+                        var color = colorizeSources ? INPUT_COLORS[sIdx % INPUT_COLORS.length] : null;
+                        drawSingleLine(sNode, tNode, w, color);
+                    }
+                });
+            });
+        }
+
+        function drawAggregatedLayerWeights(layer, sourceNodes, targetNodes, targetFilter = null) {
+            targetNodes.forEach((tNode, tIdx) => {
+                if (targetFilter && !targetFilter.includes(tIdx)) return;
+                var neuron = layer.neurons[tIdx];
+                if (!neuron) return;
+                // 38 weights -> 8 source nodes
+                neuron.weights.forEach((w, wIdx) => {
+                    var vIdx = INPUT_MAPPING[wIdx];
+                    var sNode = sourceNodes[vIdx];
+                    var color = INPUT_COLORS[vIdx];
+                    drawSingleLine(sNode, tNode, w, color);
+                });
+            });
+        }
+
+        function drawComplexWeights(layer, targetNodes, segments) {
+            targetNodes.forEach((tNode, tIdx) => {
+                var neuron = layer.neurons[tIdx];
+                if (!neuron) return;
+
+                segments.forEach(seg => {
+                    for (var i = 0; i < seg.count; i++) {
+                        // Filter logic for SEGMENT (Source Filtering)
+                        if (seg.filterIndices && !seg.filterIndices.includes(i)) continue;
+
+                        var wIndex = seg.startIndex + i;
+                        if (wIndex >= neuron.weights.length) continue;
+
+                        var w = neuron.weights[wIndex];
+
+                        if (seg.isAggregated) {
+                            var vIdx = INPUT_MAPPING[i];
+                            var sNode = seg.sourceNodes[vIdx];
+                            var color = INPUT_COLORS[vIdx];
+                            drawSingleLine(sNode, tNode, w, color);
+                        } else {
+                            var sNode = seg.sourceNodes[i];
+                            var color = seg.colors ? seg.colors[i % seg.colors.length] : null;
+                            if (sNode) drawSingleLine(sNode, tNode, w, color);
+                        }
+                    }
+                });
+            });
+        }
+
+        function drawSingleLine(sNode, tNode, weight, specificColor) {
+            var val = Math.abs(weight);
+            // Exponential scaling using global weightExponent
+            var strength = Math.pow(val, weightExponent);
+
+            // Higher threshold for cleaner visualization - skip weak connections
+            if (strength < 0.15) return;
+
+            ctx.beginPath();
+            ctx.moveTo(sNode.x, sNode.y);
+            ctx.lineTo(tNode.x, tNode.y);
+
+            // Width: 0.1 to 1.0 (Very thin)
+            ctx.lineWidth = 0.1 + Math.min(1.0, strength * 1.5);
+
+            if (specificColor) {
+                ctx.strokeStyle = specificColor;
+                ctx.globalAlpha = Math.min(0.7, strength * 0.6 + 0.1);
+            } else {
+                ctx.strokeStyle = weight > 0 ? '#60a5fa' : '#f87171';
+                ctx.globalAlpha = Math.min(0.5, strength * 0.5);
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        function drawNodeLabels(nodes, labels, offsetX, offsetY, align) {
+            ctx.font = 'bold 11px Arial';
+            ctx.textAlign = align;
+            nodes.forEach((n, i) => {
+                if (i < labels.length) {
+                    var labelText = labels[i];
+                    var lx = n.x + offsetX;
+                    var ly = n.y + offsetY;
+                    var textWidth = ctx.measureText(labelText).width;
+
+                    // Calculate bounding box based on alignment
+                    var bx = lx;
+                    if (align === 'right') bx = lx - textWidth;
+                    else if (align === 'center') bx = lx - textWidth / 2;
+
+                    // Draw button-like background
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fillRect(bx - 4, ly - 10, textWidth + 8, 14);
+                    ctx.strokeStyle = '#475569';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(bx - 4, ly - 10, textWidth + 8, 14);
+
+                    // Draw text
+                    ctx.fillStyle = '#e2e8f0';
+                    ctx.fillText(labelText, lx, ly);
+
+                    // Store label box for hit testing
+                    if (n.descIndex !== undefined) {
+                        labelBoxes.push({
+                            x: bx - 4, y: ly - 10,
+                            w: textWidth + 8, h: 14,
+                            descIndex: n.descIndex
+                        });
+                    }
+                }
+            });
+        }
+
+
+        // ====== CPU TURN AUTO-TRIGGER ======
+        // Check if it's a CPU's turn and automatically process it
+        (function () {
+            var isHumanTurn = /*[[${state.currentPlayer.pc}]]*/ true;
+            var isGameOver = /*[[${state.gameOver}]]*/ false;
+
+            if (!isHumanTurn && !isGameOver) {
+                // It's a CPU's turn! Trigger the CPU step after a short delay
+                setTimeout(function () {
+                    // POST to /game/cpu-step
+                    var form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = '/game/cpu-step';
+                    document.body.appendChild(form);
+                    form.submit();
+                }, 500); // Small delay for visual feedback
+            }
+        })();
+
+        canvas.addEventListener('click', function (e) {
+            var rect = canvas.getBoundingClientRect();
+            var scaleX = canvas.width / rect.width;
+            var scaleY = canvas.height / rect.height;
+            var mx = (e.clientX - rect.left) * scaleX;
+            var my = (e.clientY - rect.top) * scaleY;
+
+            var hit = null;
+
+            // Check label boxes first (text labels as buttons)
+            if (typeof labelBoxes !== 'undefined') {
+                labelBoxes.forEach(lb => {
+                    if (mx >= lb.x && mx <= lb.x + lb.w && my >= lb.y && my <= lb.y + lb.h) {
+                        hit = { descIndex: lb.descIndex };
+                    }
+                });
+            }
+
+            // Then check nodes
+            if (!hit && typeof brainNodes !== 'undefined') {
+                brainNodes.forEach((n) => {
+                    var dx = mx - n.x;
+                    var dy = my - n.y;
+                    if (dx * dx + dy * dy < 150) { // ~12px radius
+                        hit = n;
+                    }
+                });
+            }
+
+            var tip = document.getElementById('brainTooltip');
+            if (hit && hit.descIndex !== undefined && hit.descIndex < NODE_DESCRIPTIONS.length) {
+                var desc = NODE_DESCRIPTIONS[hit.descIndex];
+                var parts = desc.split(":");
+                tip.innerHTML = "<strong style='color:#60a5fa; display:block; margin-bottom:4px; font-size:1rem;'>" + parts[0] + "</strong>" + parts.slice(1).join(":");
+                tip.style.left = (e.clientX + 15) + 'px';
+                tip.style.top = (e.clientY + 15) + 'px';
+                tip.style.display = 'block';
+            } else {
+                tip.style.display = 'none';
+            }
+        });
+
+        /*]]>*/
+    </script>
 </body>
 
 </html>

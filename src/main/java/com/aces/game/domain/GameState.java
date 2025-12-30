@@ -28,7 +28,8 @@ public class GameState {
         NONE,
         QUEEN_PICK, // Queen Step 1: Pick 1 of 3
         QUEEN_ORDER, // Queen Step 2: Order remaining to Top
-        JOKER_PICK, // Joker discard: Pick 2 from Discard
+        JOKER_CHOICE_MODE, // Joker Step 1: Choose Stack (x2) or Hand (x1)
+        JOKER_PICK, // Joker Step 2: Pick the cards
         SELECT_TARGET, // 7/8/10: Pick Opponent
         EIGHT_CHOOSE_SOURCE, // 8 in 3+ players: Choose hand/stack/discard
         EIGHT_PICK_CARD, // 8: Pick from opponent's face-down hand
@@ -51,6 +52,8 @@ public class GameState {
     private boolean awaitingEffectChoice = false; // e.g., for Joker or 7
     private String effectType;
     private boolean hasDrawn = false;
+    private boolean hasDiscarded = false;
+    private boolean hasPlayedToStack = false;
 
     // CPU Turn Animation Support
     private boolean cpuTurnPending = false;
@@ -68,6 +71,26 @@ public class GameState {
 
     // For 7 card effect (store the selected target)
     private String sevenTargetPlayerId;
+
+    // For Joker discard effect (track count of picked cards)
+    private int jokerPickCount = 0;
+    private boolean jokerModeToStack = true; // true = 2 cards to stack, false = 1 card to hand
+
+    public boolean isJokerModeToStack() {
+        return jokerModeToStack;
+    }
+
+    public void setJokerModeToStack(boolean jokerModeToStack) {
+        this.jokerModeToStack = jokerModeToStack;
+    }
+
+    public int getJokerPickCount() {
+        return jokerPickCount;
+    }
+
+    public void setJokerPickCount(int jokerPickCount) {
+        this.jokerPickCount = jokerPickCount;
+    }
 
     public Card getBottomFacingCard() {
         return bottomFacingCard;
@@ -99,6 +122,7 @@ public class GameState {
         }
 
         hasDrawn = false;
+        hasPlayedToStack = false;
         gameMessage = "It's " + getCurrentPlayer().getName() + "'s turn.";
     }
 
@@ -139,6 +163,10 @@ public class GameState {
         return effectState == EffectState.QUEEN_ORDER;
     }
 
+    public boolean isJokerChoiceMode() {
+        return effectState == EffectState.JOKER_CHOICE_MODE;
+    }
+
     public boolean isJokerPick() {
         return effectState == EffectState.JOKER_PICK;
     }
@@ -157,5 +185,9 @@ public class GameState {
 
     public boolean isSevenPassCard() {
         return effectState == EffectState.SEVEN_PASS_CARD;
+    }
+
+    public boolean hasDrawn() {
+        return hasDrawn;
     }
 }

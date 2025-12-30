@@ -15,6 +15,12 @@ public class GameService {
     // initialCpuCount is stored in GameState effectively, but we can keep a default
     // here if needed.
 
+    @jakarta.annotation.PreDestroy
+    public void onExit() {
+        System.out.println("GameService: Saving AI Brain on Shutdown...");
+        com.aces.game.ai.GlobalAi.save();
+    }
+
     public GameState getGame() {
         return defaultGame;
     }
@@ -138,6 +144,12 @@ public class GameService {
             return;
         }
 
+        // BLOCK: Cannot draw if handling an effect
+        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+            defaultGame.setGameMessage("Finish the current action first!");
+            return;
+        }
+
         if (defaultGame.isHasDrawn()) {
             defaultGame.setGameMessage("You have already drawn a card this turn!");
             return;
@@ -191,6 +203,12 @@ public class GameService {
         if (!p.getId().equals(playerId))
             return;
 
+        // BLOCK: Cannot play if handling an effect
+        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+            defaultGame.setGameMessage("Finish the current action first!");
+            return;
+        }
+
         if (cardIndex < 0 || cardIndex >= p.getHand().size())
             return;
 
@@ -210,6 +228,7 @@ public class GameService {
         if (isValid) {
             p.getHand().remove(cardIndex);
             p.getStack().add(card);
+            defaultGame.setHasPlayedToStack(true);
 
             // If playing a Joker, need to choose what value it represents
             if (card.getRank() == Card.Rank.JOKER) {
@@ -232,8 +251,8 @@ public class GameService {
                 return;
             }
 
-            defaultGame.setGameMessage("Played " + card.getDisplayString() + " to stack.");
-            endTurn();
+            defaultGame.setGameMessage("Played " + card.getDisplayString() + " to stack. Play another or Pass.");
+            // endTurn(); // Removed to allow multiple card plays
         } else {
             defaultGame.setGameMessage("Invalid move! Must be sequential (+/- 1).");
         }
@@ -263,12 +282,12 @@ public class GameService {
 
         // Normal sequential check
         int diff = Math.abs(card.getRank().ordinal() - top.getRank().ordinal());
-        
+
         // Backdoor rule: 2 can connect to Ace (wrap around)
         if (top.getRank() == Card.Rank.TWO && card.getRank() == Card.Rank.ACE) {
             return true;
         }
-        
+
         return diff == 1;
     }
 
@@ -308,18 +327,41 @@ public class GameService {
         }
 
         if (!defaultGame.isHasDrawn()) {
-            defaultGame.setGameMessage("You must draw a card before skipping!");
+            defaultGame.setGameMessage("You must draw a card before passing!");
             return;
         }
 
-        defaultGame.setGameMessage("Skipped play phase.");
-        endTurn();
+        if (defaultGame.isHasPlayedToStack()) {
+            defaultGame.setGameMessage(p.getName() + " passed turn.");
+            endTurn();
+        } else {
+            // Allow passing if user chooses to (e.g. stuck)
+            defaultGame.setGameMessage(p.getName() + " passed turn (no play made).");
+            endTurn();
+        }
     }
 
     public void discardAndEffect(String playerId, int cardIndex) {
         Player p = defaultGame.getCurrentPlayer();
         if (!p.getId().equals(playerId))
             return;
+
+        // BLOCK: Cannot discard if handling an effect
+        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+            defaultGame.setGameMessage("Finish the current action first!");
+            return;
+        }
+
+        // BLOCK: Cannot discard if already played to stack
+        if (defaultGame.isHasPlayedToStack()) {
+            defaultGame.setGameMessage("Cannot discard! You played to the stack. You must Pass (End Turn) instead.");
+            return;
+        }
+
+        if (defaultGame.isHasDiscarded()) {
+            defaultGame.setGameMessage("You have already discarded a card this turn!");
+            return;
+        }
 
         if (cardIndex < 0 || cardIndex >= p.getHand().size())
             return;
@@ -385,6 +427,7 @@ public class GameService {
                 }
             }
             defaultGame.setGameMessage("Queen played! Select 1 card to keep.");
+
         } else if (card.getRank() == Card.Rank.JOKER) {
             defaultGame.getTempBuffer().addAll(p.getDiscardPile());
             // Remove the LAST card (the Joker itself) from options if present
@@ -394,19 +437,26 @@ public class GameService {
 
             if (defaultGame.getTempBuffer().isEmpty()) {
                 defaultGame.setGameMessage("Joker played! But discard pile is empty (except Joker).");
-                // Auto skip?
                 defaultGame.setEffectState(GameState.EffectState.NONE);
                 endTurn();
             } else {
-                defaultGame.setGameMessage("Joker played! Pick a card from your discard pile.");
+                defaultGame.setGameMessage("Joker played! Choose ability:");
+                defaultGame.setEffectState(GameState.EffectState.JOKER_CHOICE_MODE); // Set to Choice Mode
+                defaultGame.setJokerPickCount(0);
             }
         } else if (card.getRank() == Card.Rank.SEVEN) {
             // Validate 7 BEFORE showing target selection
-            if (isValidSeven(card)) {
-                defaultGame.setGameMessage("Valid 7! Select a target to sabotage.");
+            if (!p.getHand().isEmpty()) {
+                if (isValidSeven(card)) {
+                    defaultGame.setGameMessage("Valid 7! Select a target to sabotage.");
+                } else {
+                    // 7 doesn't meet suit/color requirements - no effect
+                    defaultGame.setGameMessage("7 discarded but didn't match bottom card condition. No effect.");
+                    defaultGame.setEffectState(GameState.EffectState.NONE);
+                    endTurn();
+                }
             } else {
-                // 7 doesn't meet suit/color requirements - no effect
-                defaultGame.setGameMessage("7 discarded but didn't match bottom card condition. No effect.");
+                defaultGame.setGameMessage("7 discarded, but you have no cards to use its power!");
                 defaultGame.setEffectState(GameState.EffectState.NONE);
                 endTurn();
             }
@@ -481,38 +531,88 @@ public class GameService {
                 }
                 break;
 
+            case JOKER_CHOICE_MODE:
+                // actionData should be "STACK" or "HAND"
+                if ("STACK".equals(actionData)) {
+                    defaultGame.setJokerModeToStack(true);
+                    defaultGame.setGameMessage("Pick up to 2 cards for your STACK.");
+                    defaultGame.setEffectState(GameState.EffectState.JOKER_PICK);
+                } else if ("HAND".equals(actionData)) {
+                    defaultGame.setJokerModeToStack(false);
+                    defaultGame.setGameMessage("Pick 1 card for your HAND.");
+                    defaultGame.setEffectState(GameState.EffectState.JOKER_PICK);
+                }
+                break;
+
             case JOKER_PICK:
                 try {
                     int pickIdx = Integer.parseInt(actionData);
                     if (pickIdx >= 0 && pickIdx < defaultGame.getTempBuffer().size()) {
-                        Card picked = defaultGame.getTempBuffer().get(pickIdx);
+                        Card picked = defaultGame.getTempBuffer().get(pickIdx); // Peek first
 
-                        // Remove from actual discard pile (Find first match)
-                        // Note: defaultGame.getTempBuffer() was a shallow copy at init time?
-                        // Actually in init, we did addAll.
-                        // We need to find the card object in p.getDiscardPile().
-
-                        boolean found = false;
-                        for (int i = 0; i < p.getDiscardPile().size(); i++) {
-                            // Don't pick the Joker we just played (which should be at end)
-                            // But picked is definitely not the Joker because we removed it from buffer.
-                            if (p.getDiscardPile().get(i).equals(picked)) {
-                                p.getDiscardPile().remove(i);
-                                found = true;
-                                break;
+                        if (defaultGame.isJokerModeToStack()) {
+                            // --- STACK MODE (Up to 2 cards, Strict Validation) ---
+                            Card top = p.getTopStack();
+                            boolean fitsStack = false;
+                            if (top == null) {
+                                fitsStack = (picked.getRank() != Card.Rank.JOKER && picked.getRank() != Card.Rank.ACE);
+                            } else {
+                                fitsStack = isSequenceValid(p, top, picked);
                             }
-                        }
 
-                        if (found) {
-                            // Also remove from global discard pile to prevent duplicates on reshuffle
-                            defaultGame.getDiscardPile().remove(picked);
-                            p.getHand().add(picked);
-                            defaultGame.setGameMessage("Recovered " + picked.getDisplayString());
-                        }
+                            if (!fitsStack) {
+                                defaultGame.setGameMessage("Invalid selection! " + picked.getDisplayString()
+                                        + " does not fit your stack sequence.");
+                                return; // Let them pick again
+                            }
 
-                        defaultGame.getTempBuffer().clear();
-                        defaultGame.setEffectState(GameState.EffectState.NONE);
-                        endTurn();
+                            // Proceed to move to stack
+                            defaultGame.getTempBuffer().remove(pickIdx);
+                            boolean found = removeCardFromPlayerDiscard(p, picked);
+
+                            if (found) {
+                                defaultGame.getDiscardPile().remove(picked);
+                                p.getStack().add(picked);
+
+                                // Check Win
+                                if (picked.getRank() == Card.Rank.ACE) {
+                                    defaultGame.setGameOver(true);
+                                    defaultGame.setWinner(p);
+                                    defaultGame.setGameMessage("WINNER! " + p.getName() + " placed the Ace via Joker!");
+                                    defaultGame.setEffectState(GameState.EffectState.NONE);
+                                    endTurn();
+                                    return;
+                                }
+
+                                int count = defaultGame.getJokerPickCount() + 1;
+                                defaultGame.setJokerPickCount(count);
+
+                                if (count < 2 && !defaultGame.getTempBuffer().isEmpty()) {
+                                    defaultGame.setGameMessage(
+                                            "Recovered " + picked.getDisplayString() + " to STACK. Pick one more.");
+                                } else {
+                                    defaultGame.getTempBuffer().clear();
+                                    defaultGame.setEffectState(GameState.EffectState.NONE);
+                                    defaultGame.setGameMessage("Joker effect complete.");
+                                    endTurn();
+                                }
+                            }
+                        } else {
+                            // --- HAND MODE (1 card, No Validation needed) ---
+                            defaultGame.getTempBuffer().remove(pickIdx);
+                            boolean found = removeCardFromPlayerDiscard(p, picked);
+
+                            if (found) {
+                                defaultGame.getDiscardPile().remove(picked);
+                                p.getHand().add(picked);
+                                defaultGame.setGameMessage("Recovered " + picked.getDisplayString() + " to HAND.");
+                            }
+
+                            // Always end after 1 card
+                            defaultGame.getTempBuffer().clear();
+                            defaultGame.setEffectState(GameState.EffectState.NONE);
+                            endTurn();
+                        }
                     }
                 } catch (NumberFormatException e) {
                 }
@@ -706,20 +806,43 @@ public class GameService {
         }
     }
 
+    private boolean removeCardFromPlayerDiscard(Player p, Card picked) {
+        for (int i = 0; i < p.getDiscardPile().size(); i++) {
+            if (p.getDiscardPile().get(i).equals(picked)) {
+                p.getDiscardPile().remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void applyTargetedEffect(Player source, Player target, Card.Rank rank) {
         switch (rank) {
-            case EIGHT: // Pick card from hand (blind selection)
-                if (defaultGame.getPlayers().size() > 2) {
-                    // Start selection phase
-                    defaultGame.setEightTargetPlayerId(target.getId());
-                    defaultGame.setEffectState(GameState.EffectState.EIGHT_CHOOSE_SOURCE);
-                    defaultGame.setGameMessage("Choose where to steal from: Hand, Stack, or Discard!");
-                } else {
-                    // Default behavior (<= 2 players): Steal from hand
-                    if (!target.getHand().isEmpty()) {
-                        defaultGame.setEightTargetPlayerId(target.getId());
+            case EIGHT: // Steal a card from target
+                // Check if target has ANY cards to steal
+                boolean hasHand = !target.getHand().isEmpty();
+                boolean hasStack = !target.getStack().isEmpty();
+                boolean hasDiscard = !target.getDiscardPile().isEmpty();
+
+                defaultGame.setEightTargetPlayerId(target.getId());
+
+                // If 2 Players: Rule is "Can only take from someone's hand"
+                if (defaultGame.getPlayers().size() == 2) {
+                    if (hasHand) {
+                        // Skip source selection, go directly to picking from hand
                         defaultGame.setEffectState(GameState.EffectState.EIGHT_PICK_CARD);
-                        defaultGame.setGameMessage("Pick a card from " + target.getName() + "'s hand!");
+                        defaultGame.setGameMessage("Stealing from " + target.getName() + "'s hand... pick a card!");
+                    } else {
+                        defaultGame.setGameMessage(target.getName() + " has no cards in hand!");
+                        defaultGame.setEffectState(GameState.EffectState.NONE);
+                        endTurn();
+                    }
+                } else {
+                    // 3+ Players: Choose Source (Hand, Stack, Discard)
+                    if (hasHand || hasStack || hasDiscard) {
+                        defaultGame.setEffectState(GameState.EffectState.EIGHT_CHOOSE_SOURCE);
+                        defaultGame.setGameMessage(
+                                "Choose where to steal from " + target.getName() + ": Hand, Stack, or Discard!");
                     } else {
                         defaultGame.setGameMessage(target.getName() + " has no cards to steal!");
                         defaultGame.setEffectState(GameState.EffectState.NONE);
@@ -845,159 +968,107 @@ public class GameService {
      * progression.
      * Returns true if the CPU turn is complete, false if more steps needed.
      */
-    public boolean processCpuStep() {
-        if (defaultGame.getCurrentPlayer().isPc()) {
-            // Human's turn - no CPU step needed
-            defaultGame.setCpuTurnPending(false);
-            return true;
+    public void processCpuStep() {
+        if (defaultGame.getPhase() != GameState.Phase.PLAYING)
+            return;
+
+        Player current = defaultGame.getCurrentPlayer();
+        if (current.isPc()) // If human, don't process
+            return;
+
+        // Add Artificial Delay for Visuals
+        try {
+            Thread.sleep(1500);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
 
-        Player cpu = defaultGame.getCurrentPlayer();
-
-        // Step 1: Draw if hand is empty
-        if (cpu.getHand().isEmpty()) {
-            if (defaultGame.getDrawPile().isEmpty())
-                reshuffleDeck();
-            if (!defaultGame.getDrawPile().isEmpty()) {
-                Card drawn = defaultGame.getDrawPile().pop();
-                cpu.getHand().add(drawn);
-                defaultGame.setLastAction(cpu.getName() + " drew a card.");
-                return false; // More steps may follow
-            }
-        }
-
-        // Step 2: Try to play to stack
-        Card top = cpu.getTopStack();
-        for (int i = 0; i < cpu.getHand().size(); i++) {
-            Card c = cpu.getHand().get(i);
-            // Cannot start stack with Joker or Ace
-            boolean isValid = (top == null) ? (c.getRank() != Card.Rank.JOKER && c.getRank() != Card.Rank.ACE)
-                    : isSequenceValid(cpu, top, c);
-
-            if (isValid) {
-                cpu.getHand().remove(i);
-                cpu.getStack().add(c);
-
-                // Check win
-                if (c.getRank() == Card.Rank.ACE) {
-                    defaultGame.setGameOver(true);
-                    defaultGame.setWinner(cpu);
-                    defaultGame.setGameMessage("WINNER! " + cpu.getName() + " placed the Ace!");
-                    defaultGame.setCpuTurnPending(false);
-                    return true;
-                }
-
-                defaultGame.setLastAction(cpu.getName() + " played " + c.getDisplayString() + " to stack.");
-                defaultGame.nextTurn();
-
-                // Check if next player is also CPU
-                // Check if next player is also CPU
-                if (!defaultGame.getCurrentPlayer().isPc()) {
-                    defaultGame.setCpuTurnPending(true);
-                    return true;
-                } else {
-                    defaultGame.setCpuTurnPending(false);
-                    return true;
-                }
-            }
-        }
-
-        // Step 3: Must discard
-        if (!cpu.getHand().isEmpty()) {
-            Card discarded = cpu.getHand().remove(0);
-            cpu.getDiscardPile().add(discarded);
-            defaultGame.getDiscardPile().add(discarded); // Add to global discard for effects
-
-            // Handle effects if triggered
-            if (isInteractiveEffect(discarded)) {
-                defaultGame.setEffectState(getInitialEffectState(discarded));
-                defaultGame.setEffectSourceRank(discarded.getRank());
-                initializeInteraction(discarded, cpu);
-
-                // Keep resolving effects until finished (handles multi-step like 7 or Queen)
-                while (defaultGame.getEffectState() != GameState.EffectState.NONE) {
-                    resolveCpuEffect(cpu);
-                }
-                // NOTE: Interactive effects handle endTurn()/nextTurn() internally when
-                // complete.
-                // We do NOT call defaultGame.nextTurn() here to avoid skipping the next player.
-            } else {
-                applyInstantEffect(discarded, cpu);
-                defaultGame.setLastAction(cpu.getName() + " discarded " + discarded.getDisplayString() + ".");
-                defaultGame.nextTurn();
-            }
-
-            // Check if next player is also CPU
-            // Check if next player is also CPU
-            if (!defaultGame.getCurrentPlayer().isPc()) {
-                // Next is CPU, keep polling
-                defaultGame.setCpuTurnPending(true);
-                return true;
-            } else {
-                // Next is Human, stop polling
-                defaultGame.setCpuTurnPending(false);
-                return true;
-            }
-        }
-
-        // Fallback: skip turn
-        defaultGame.nextTurn();
-        if (!defaultGame.getCurrentPlayer().isPc()) {
-            defaultGame.setCpuTurnPending(true);
-        } else {
-            defaultGame.setCpuTurnPending(false);
-        }
-        return true;
+        executeCpuStep(current);
     }
 
-    private void executeCpuTurn() {
-        Player cpu = defaultGame.getCurrentPlayer();
+    private void executeCpuStep(Player cpu) {
+        // Skip if somehow called for human player
+        if (cpu.isPc()) {
+            defaultGame.setCpuTurnPending(false);
+            return;
+        }
 
-        // 1. Draw if hand empty
-        if (cpu.getHand().isEmpty()) {
+        if (defaultGame.isGameOver())
+            return;
+
+        // 1. Draw Step (Rules: Start of turn always draw if not drawn)
+        if (!defaultGame.isHasDrawn()) {
             if (defaultGame.getDrawPile().isEmpty())
                 reshuffleDeck();
             if (!defaultGame.getDrawPile().isEmpty()) {
                 cpu.getHand().add(defaultGame.getDrawPile().pop());
+                defaultGame.setHasDrawn(true);
+                defaultGame.setLastAction(cpu.getName() + " drew a card.");
             }
         }
 
-        // 2. Try to Play to Stack
-        boolean played = false;
-        Card top = cpu.getTopStack();
+        // 2. Brain Decision
+        List<Double> inputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, cpu);
+        List<Double> outputs = com.aces.game.ai.GlobalAi.getInstance().feedForward(inputs);
 
-        // Strategy: Find FIRST valid card.
-        for (int i = 0; i < cpu.getHand().size(); i++) {
-            Card c = cpu.getHand().get(i);
-            boolean isValid = false;
-
-            if (top == null)
-                isValid = true;
-            else
-                isValid = isSequenceValid(cpu, top, c);
-
-            if (isValid) {
-                // Play it
-                playToStack(cpu.getId(), i);
-                played = true;
-                break;
+        // Find best action
+        int action = 0;
+        double maxVal = -999;
+        for (int i = 0; i < outputs.size(); i++) {
+            if (outputs.get(i) > maxVal) {
+                maxVal = outputs.get(i);
+                action = i;
             }
         }
 
-        if (!played) {
-            // Must Discard
-            if (!cpu.getHand().isEmpty()) {
-                // Random discard for now
-                discardAndEffect(cpu.getId(), 0);
+        /* ACTIONS: 0: PASS, 1: STACK, 2: SKIP, 3: ATTACK, 4: NORMAL */
 
-                // Handle Effect if triggered
-                if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
-                    resolveCpuEffect(cpu);
-                }
+        if (action == 1) { // PLAY STACK
+            int idx = findBestPlayToStack(cpu);
+            if (idx != -1) {
+                playToStack(cpu.getId(), idx);
+                if (defaultGame.isGameOver())
+                    return;
+                defaultGame.setCpuTurnPending(true);
+                return;
+            }
+        } else if (action >= 2) { // DISCARD (2,3,4)
+            if (defaultGame.isHasPlayedToStack()) {
+                // Must Pass
             } else {
-                // Forced pass? (Shouldn't happen if we force draw)
-                defaultGame.nextTurn();
+                String cat = (action == 2) ? "SKIP" : (action == 3) ? "ATTACK" : "NORMAL";
+                int idx = findBestDiscard(cpu, cat);
+                if (idx == -1 && !cat.equals("NORMAL"))
+                    idx = findBestDiscard(cpu, "NORMAL");
+
+                if (idx != -1) {
+                    discardAndEffect(cpu.getId(), idx);
+                    while (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+                        resolveCpuEffect(cpu);
+                    }
+                    if (!defaultGame.getCurrentPlayer().isPc())
+                        defaultGame.setCpuTurnPending(false);
+                    else
+                        defaultGame.setCpuTurnPending(true);
+                    return;
+                }
             }
+        }
+
+        // Fallback / Pass
+        if (defaultGame.isHasPlayedToStack()) {
+            skipTurn(cpu.getId());
+        } else {
+            if (!cpu.getHand().isEmpty()) {
+                int idx = findBestDiscard(cpu, "NORMAL");
+                if (idx != -1) {
+                    discardAndEffect(cpu.getId(), idx);
+                    while (defaultGame.getEffectState() != GameState.EffectState.NONE)
+                        resolveCpuEffect(cpu);
+                    return;
+                }
+            }
+            skipTurn(cpu.getId());
         }
     }
 
@@ -1031,7 +1102,6 @@ public class GameService {
             case JOKER_STACK_VALUE:
                 // CPU must choose a value for the Joker
                 // Find a valid adjacent rank to the card below (at size-2)
-                Card top = cpu.getTopStack();
                 // Joker is already on top, so look at one below
                 Card below = null;
                 if (cpu.getStack().size() >= 2) {
@@ -1112,5 +1182,71 @@ public class GameService {
                 defaultGame.setEffectState(GameState.EffectState.NONE);
                 defaultGame.nextTurn();
         }
+    }
+
+    // --- AI Heuristics ---
+
+    private int findBestPlayToStack(Player p) {
+        Card top = p.getTopStack();
+        int bestIdx = -1;
+        int bestVal = -1;
+        for (int i = 0; i < p.getHand().size(); i++) {
+            Card c = p.getHand().get(i);
+            boolean valid = (top == null) ? (c.getRank() != Card.Rank.ACE && c.getRank() != Card.Rank.JOKER)
+                    : isSequenceValid(p, top, c);
+            if (valid) {
+                int val = getAiCardValue(c);
+                if (val > bestVal) {
+                    bestVal = val;
+                    bestIdx = i;
+                }
+            }
+        }
+        return bestIdx;
+    }
+
+    private int findBestDiscard(Player p, String category) {
+        int bestIdx = -1;
+        int bestScore = -999;
+
+        // Prioritize specific categories if requested
+        for (int i = 0; i < p.getHand().size(); i++) {
+            Card c = p.getHand().get(i);
+            boolean matches = false;
+
+            if (category.equals("SKIP"))
+                matches = (c.getRank() == Card.Rank.JACK || c.getRank() == Card.Rank.KING
+                        || c.getRank() == Card.Rank.FOUR);
+            else if (category.equals("ATTACK"))
+                matches = (c.getRank() == Card.Rank.TWO || c.getRank() == Card.Rank.JOKER
+                        || c.getRank() == Card.Rank.SEVEN || c.getRank() == Card.Rank.EIGHT);
+            else
+                matches = true; // Normal matches all
+
+            if (matches) {
+                int score = getAiCardValue(c);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = i;
+                }
+            }
+        }
+
+        // If specific category not found, return -1 (Caller handles fallback)
+        // Except for Normal, which should find *something* unless hand is empty.
+        if (bestIdx == -1 && !category.equals("NORMAL")) {
+            return -1;
+        }
+        return bestIdx;
+    }
+
+    private int getAiCardValue(Card c) {
+        if (c == null)
+            return 0;
+        if (c.getRank() == Card.Rank.JOKER)
+            return 15;
+        if (c.getRank() == Card.Rank.ACE)
+            return 14;
+        return c.getRank().ordinal() + 1; // 2..13
     }
 }
