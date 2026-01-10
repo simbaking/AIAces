@@ -7,11 +7,15 @@ public class NeuralNetwork {
     // --- Architecture Blocks ---
     private List<Layer> strategyLayers; // First 5 layers
     private Layer strategyBottleneck; // The 3-node layer (Aggression, Hoarding, Planning)
+    private List<Layer> planPreLayers; // 3 layers, 5 nodes - feeds INTO Plan bottleneck
+    private List<Layer> planPostLayers; // 3 layers, 5 nodes - receives FROM Plan bottleneck (shared weights)
     private List<Layer> executionLayers; // Next 5 layers
     private Layer outputLayer; // Final actions
 
     // Captured State for Visualization
     private List<Double> lastStrategyValues; // Values of the 3 strategy nodes
+    private List<Double> lastPlanPreValues; // Output of planPreLayers for visualization
+    private List<Double> lastPlanPostValues; // Output of planPostLayers for visualization
 
     // Storage for backprop
     private List<List<Double>> layerActivations = new ArrayList<>();
@@ -34,12 +38,12 @@ public class NeuralNetwork {
 
         // -- Bottleneck: Strategy Definition --
         // Aggro neuron: 32 (from Strategy) + 4 (Aggro inputs) = 36 weights
-        // Hoard/Plan neurons: 32 weights each
-        // We create the bottleneck with 3 neurons, all with 36 inputs,
-        // but Hoard/Plan weights 32-35 will be zeroed (no connection)
-        this.strategyBottleneck = new Layer(3, strategyWidth + 4);
+        // Hoard neuron: 32 (from Strategy) + 0 (Aggro inputs) = only uses 32 weights
+        // Plan neuron: 32 (from Strategy) + 0 (Aggro inputs) = only uses 32 weights
+        // We create all 3 neurons with 36 inputs
+        this.strategyBottleneck = new Layer(3, strategyWidth + 4); // +4 Aggro
 
-        // Zero out Aggro-specific weights for Hoard (neuron 1) and Plan (neuron 2)
+        // Zero out Aggro-specific weights (32-35) for Hoard (neuron 1) and Plan (neuron 2)
         for (int n = 1; n <= 2; n++) {
             Neuron neuron = strategyBottleneck.getNeurons().get(n);
             List<Double> w = neuron.getWeights();
@@ -48,19 +52,36 @@ public class NeuralNetwork {
             }
         }
 
+        // -- Plan-Specific Processing Networks --
+        // 3 layers, 5 neurons each, first layer takes 38 standard inputs
+        int planWidth = 5;
+        this.planPreLayers = new ArrayList<>();
+        planPreLayers.add(new Layer(planWidth, standardInputs)); // Layer 0: 38 -> 5
+        planPreLayers.add(new Layer(planWidth, planWidth));       // Layer 1: 5 -> 5
+        planPreLayers.add(new Layer(planWidth, planWidth));       // Layer 2: 5 -> 5
+
+        // Post layers share weights with pre layers (will be synced)
+        this.planPostLayers = new ArrayList<>();
+        planPostLayers.add(new Layer(planWidth, standardInputs)); // Layer 0: 38 -> 5
+        planPostLayers.add(new Layer(planWidth, planWidth));       // Layer 1: 5 -> 5
+        planPostLayers.add(new Layer(planWidth, planWidth));       // Layer 2: 5 -> 5
+
+        // Sync weights: copy from pre to post
+        syncPlanWeights();
+
         // -- Block 2: Tactical Execution --
         // 5 Layers that act on Strategy
-        // Execution Input Size = 3 (Strategy) + inputSize (Residual)
-        int executionInputSize = 3 + inputSize;
+        // Execution Input Size = 3 (Strategy) + 5 (planPost output) + inputSize (Residual)
+        int executionInputSize = 3 + planWidth + inputSize;
         int executionWidth = 32;
 
         Layer execL0 = new Layer(executionWidth, executionInputSize);
         executionLayers.add(execL0);
 
-        // REDUCE Residual Connection Weights (Indices 3 to end)
+        // REDUCE Residual Connection Weights (Indices 3+planWidth to end)
         for (Neuron n : execL0.getNeurons()) {
             List<Double> w = n.getWeights();
-            for (int i = 3; i < w.size(); i++) {
+            for (int i = 3 + planWidth; i < w.size(); i++) {
                 w.set(i, w.get(i) * 0.1); // 10% strength
             }
         }
@@ -71,6 +92,28 @@ public class NeuralNetwork {
 
         // -- Output --
         this.outputLayer = new Layer(outputSize, executionWidth);
+    }
+
+    /**
+     * Sync weights from planPreLayers to planPostLayers.
+     * This ensures both networks are identical.
+     */
+    public void syncPlanWeights() {
+        if (planPreLayers == null || planPostLayers == null) return;
+        for (int layerIdx = 0; layerIdx < planPreLayers.size(); layerIdx++) {
+            Layer preLayer = planPreLayers.get(layerIdx);
+            Layer postLayer = planPostLayers.get(layerIdx);
+            for (int neuronIdx = 0; neuronIdx < preLayer.getNeurons().size(); neuronIdx++) {
+                Neuron preNeuron = preLayer.getNeurons().get(neuronIdx);
+                Neuron postNeuron = postLayer.getNeurons().get(neuronIdx);
+                // Copy weights
+                for (int wIdx = 0; wIdx < preNeuron.getWeights().size(); wIdx++) {
+                    postNeuron.getWeights().set(wIdx, preNeuron.getWeights().get(wIdx));
+                }
+                // Copy bias
+                postNeuron.setBias(preNeuron.getBias());
+            }
+        }
     }
 
     // Storing inputs for training is complex. Switched to Evolutionary/Mutation
@@ -90,7 +133,16 @@ public class NeuralNetwork {
             layerActivations.add(currentStrat);
         }
 
-        // 2. Prepare Bottleneck Input (32 from Strategy + 4 Aggro-specific)
+        // 2. Run Plan Pre-Processing Network (38 inputs -> 5 outputs)
+        List<Double> planPreOut = new ArrayList<>(standardInputs);
+        if (planPreLayers != null) {
+            for (Layer l : planPreLayers) {
+                planPreOut = l.feedForward(planPreOut);
+            }
+            this.lastPlanPreValues = planPreOut;
+        }
+
+        // 3. Prepare Bottleneck Input (32 from Strategy + 4 Aggro-specific)
         // Aggro inputs are at indices 38-41
         List<Double> bnInput = new ArrayList<>(currentStrat); // 32 values from Strategy
         if (inputs.size() >= 42) {
@@ -99,32 +151,53 @@ public class NeuralNetwork {
             bnInput.add(inputs.get(40)); // MinDist
             bnInput.add(inputs.get(41)); // ClosestPlayer
         } else {
-            // Fallback for old input size
             bnInput.add(0.0);
             bnInput.add(0.0);
             bnInput.add(0.0);
             bnInput.add(0.0);
         }
 
-        // 3. Run Bottleneck (36 inputs)
+        // 4. Run Bottleneck (36 inputs)
+        // Note: Plan neuron (index 2) receives additional influence from planPreOut
         List<Double> strategyValues = strategyBottleneck.feedForward(bnInput);
+        
+        // Modulate Plan value with planPreOut (add average of planPreOut)
+        if (planPreOut != null && !planPreOut.isEmpty()) {
+            double planBoost = planPreOut.stream().mapToDouble(d -> d).average().orElse(0.0);
+            double originalPlan = strategyValues.get(2);
+            // Sigmoid blend: keep in 0-1 range
+            double modifiedPlan = 1.0 / (1.0 + Math.exp(-(originalPlan + planBoost * 0.5 - 0.5)));
+            strategyValues.set(2, modifiedPlan);
+        }
+        
         this.lastStrategyValues = strategyValues;
         layerActivations.add(strategyValues);
 
-        // 4. Prepare Execution Input (Strategy + Residual Inputs)
+        // 5. Run Plan Post-Processing Network (38 inputs -> 5 outputs, same weights as pre)
+        List<Double> planPostOut = new ArrayList<>(standardInputs);
+        if (planPostLayers != null) {
+            syncPlanWeights(); // Ensure weights are synced before running
+            for (Layer l : planPostLayers) {
+                planPostOut = l.feedForward(planPostOut);
+            }
+            this.lastPlanPostValues = planPostOut;
+        }
+
+        // 6. Prepare Execution Input (Strategy + PlanPost + Residual Inputs)
         List<Double> executionIn = new ArrayList<>();
-        executionIn.addAll(strategyValues);
-        executionIn.addAll(inputs); // Reduced residual connection
+        executionIn.addAll(strategyValues);      // 3 values
+        executionIn.addAll(planPostOut);          // 5 values from Plan post-processing
+        executionIn.addAll(inputs);               // 42 values (reduced residual connection)
         layerActivations.add(executionIn);
 
-        // 5. Run Execution Block
+        // 7. Run Execution Block
         List<Double> current = executionIn;
         for (Layer l : executionLayers) {
             current = l.feedForward(current);
             layerActivations.add(current);
         }
 
-        // 6. Output
+        // 8. Output
         return outputLayer.feedForward(current);
     }
 
@@ -155,6 +228,12 @@ public class NeuralNetwork {
             mutateLayer(l, rate, strength);
         for (Layer l : strategyLayers)
             mutateLayer(l, rate, strength);
+        // Mutate planPreLayers (planPostLayers will be synced)
+        if (planPreLayers != null) {
+            for (Layer l : planPreLayers)
+                mutateLayer(l, rate, strength);
+            syncPlanWeights(); // Keep post in sync with pre
+        }
     }
 
     private void mutateLayer(Layer l, double rate, double strength) {
@@ -218,5 +297,38 @@ public class NeuralNetwork {
 
     public void setLayerActivations(List<List<Double>> layerActivations) {
         this.layerActivations = layerActivations;
+    }
+
+    // --- Plan Network Getters/Setters ---
+    public List<Layer> getPlanPreLayers() {
+        return planPreLayers;
+    }
+
+    public void setPlanPreLayers(List<Layer> planPreLayers) {
+        this.planPreLayers = planPreLayers;
+    }
+
+    public List<Layer> getPlanPostLayers() {
+        return planPostLayers;
+    }
+
+    public void setPlanPostLayers(List<Layer> planPostLayers) {
+        this.planPostLayers = planPostLayers;
+    }
+
+    public List<Double> getLastPlanPreValues() {
+        return lastPlanPreValues;
+    }
+
+    public void setLastPlanPreValues(List<Double> lastPlanPreValues) {
+        this.lastPlanPreValues = lastPlanPreValues;
+    }
+
+    public List<Double> getLastPlanPostValues() {
+        return lastPlanPostValues;
+    }
+
+    public void setLastPlanPostValues(List<Double> lastPlanPostValues) {
+        this.lastPlanPostValues = lastPlanPostValues;
     }
 }

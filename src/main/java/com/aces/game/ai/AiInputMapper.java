@@ -110,9 +110,9 @@ public class AiInputMapper {
         // 1-7=opponents)
         inputs.add(closestPlayerIdx / 7.0);
 
-        // === HOARD-SPECIFIC INPUT (Index 42) ===
-        // [42] SelfHandSize: Number of cards in my hand (for Hoard strategy)
-        inputs.add(self.getHand().size() / 20.0);
+        // === HOARD-SPECIFIC INPUT REMOVED TO MATCH 42 INPUTS ===
+        // [42] SelfHandSize removed
+
 
         return inputs;
     }

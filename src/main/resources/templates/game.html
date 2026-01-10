@@ -656,8 +656,8 @@
             <!-- Controls -->
             <div style="display:flex; gap:20px; align-items:center;">
                 <div style="display:flex; flex-direction:column; color:#94a3b8; font-size:0.75rem;">
-                    <span>Weight Focus: <span id="expVal" style="color:#fff; font-weight:bold;">25.0</span></span>
-                    <input id="expSlider" type="range" min="1" max="50" step="0.5" value="25"
+                    <span>Weight Focus: <span id="expVal" style="color:#fff; font-weight:bold;">2.0</span></span>
+                    <input id="expSlider" type="range" min="0.5" max="10" step="0.1" value="2"
                         style="width:100px; cursor:pointer;" oninput="updateExp(this.value)">
                 </div>
                 <div style="display:flex; gap:4px; background:#1e293b; padding:4px; border-radius:6px;">
@@ -779,7 +779,7 @@
         var brainNodes = []; // Global storage for node hit testing
         var labelBoxes = []; // Global storage for label hit testing
         var lastAiData = null;
-        var weightExponent = 25.0; // Slider value (Default 25)
+        var weightExponent = 2.0; // Slider value (Default 2)
         var activeStrategy = 'ALL'; // 'ALL', 0, 1, 2
 
         function updateExp(val) {
@@ -839,6 +839,8 @@
         NODE_DESCRIPTIONS.push("AvgOppDist: Average opponent distance to Ace.");
         NODE_DESCRIPTIONS.push("MinDist: Smallest distance-to-Ace among all players.");
         NODE_DESCRIPTIONS.push("ClosestPlayer: Which player is closest to winning.");
+        // Describe Hoard-Specific Input (20)
+        NODE_DESCRIPTIONS.push("HandSize: Number of cards in my hand (Hoard-only input).");
 
         // Map 38 Inputs to 8 Visual Nodes
         const INPUT_MAPPING = [];
@@ -925,6 +927,20 @@
             aggroNodes[3].descIndex = 19; aggroNodes[3].color = '#991b1b'; // ClosestPlayer
             brainNodes = brainNodes.concat(aggroNodes);
 
+            // Hoard-Specific Input Node (1 node) - positioned LEFT of Hoard bottleneck node
+            var hoardInputVal = Math.abs(data.inputs[5] || 0); // Self Hand Count (index 5)
+            console.log("bnNodes[1] position:", bnNodes[1] ? { x: bnNodes[1].x, y: bnNodes[1].y } : "UNDEFINED");
+            var hoardNode = {
+                x: bnNodes[1].x - 50, // Left of Hoard node
+                y: bnNodes[1].y,      // Same Y as Hoard node
+                val: hoardInputVal,
+                isKey: false,
+                descIndex: 20,
+                color: '#16a34a' // Green for Hoard
+            };
+            console.log("hoardNode created at:", { x: hoardNode.x, y: hoardNode.y });
+            brainNodes.push(hoardNode);
+
             // Exec Layers
             brain.executionLayers.forEach(l => {
                 stages.push(calculateNodes(getX(currentStage++), new Array(l.neurons.length).fill(0), false));
@@ -966,6 +982,7 @@
                     drawSingleLine(an, bnNodes[0], w, aggroNodes[ai].color);
                 });
             }
+
             sIdx++;
 
             // 4. Bottleneck + Inputs -> Exec 0
@@ -998,6 +1015,11 @@
             });
             // Draw Aggro input nodes
             aggroNodes.forEach(n => drawNodeCircle(n, -1, 0));
+            // Draw Hoard input node and connection to Hoard bottleneck
+            drawNodeCircle(hoardNode, -1, 0);
+            if (activeStrategy === 'ALL' || activeStrategy === 1) {
+                drawSingleLine(hoardNode, bnNodes[1], 0.5, '#16a34a'); // Visual connection
+            }
 
             function drawNodeCircle(n, stgIdx, maxStg) {
                 ctx.beginPath();
@@ -1040,6 +1062,143 @@
             ctx.fillStyle = '#ef4444';
             ctx.textAlign = "center";
             ctx.fillText("Aggro Inputs", aggroNodes[1].x + 15, aggroNodes[0].y - 10);
+
+            // Hoard input label (positioned left of the node)
+            ctx.fillStyle = '#16a34a';
+            ctx.textAlign = "right";
+            ctx.fillText("Hand", hoardNode.x - 10, hoardNode.y + 4);
+
+            // === PLAN PROCESSING NETWORKS ===
+            // Draw planPreLayers (left of Plan node) and planPostLayers (right of Plan node)
+            if (brain.planPreLayers && brain.planPreLayers.length > 0) {
+                var planNode = bnNodes[2]; // Plan is index 2
+                var planPreNodes = [];
+                var planPostNodes = [];
+
+                // Position: Below Plan node, spread horizontally
+                var planNetY = planNode.y + 60; // Below Plan
+                var planLayerSpacing = 40; // Horizontal spacing between layers
+                var planNodeSpacing = 15; // Vertical spacing between nodes in a layer
+
+                // Pre-network (3 layers, 5 nodes each) - LEFT of Plan
+                var preStartX = planNode.x - 80;
+                for (var layerIdx = 0; layerIdx < brain.planPreLayers.length; layerIdx++) {
+                    var layer = brain.planPreLayers[layerIdx];
+                    var layerX = preStartX - (2 - layerIdx) * planLayerSpacing; // Right to left
+                    for (var nodeIdx = 0; nodeIdx < layer.neurons.length; nodeIdx++) {
+                        var nodeY = planNetY + (nodeIdx - 2) * planNodeSpacing;
+                        planPreNodes.push({
+                            x: layerX,
+                            y: nodeY,
+                            layerIdx: layerIdx,
+                            nodeIdx: nodeIdx,
+                            color: '#a855f7' // Purple for Plan networks
+                        });
+                    }
+                }
+
+                // Post-network (3 layers, 5 nodes each) - RIGHT of Plan
+                var postStartX = planNode.x + 80;
+                for (var layerIdx = 0; layerIdx < brain.planPostLayers.length; layerIdx++) {
+                    var layer = brain.planPostLayers[layerIdx];
+                    var layerX = postStartX + layerIdx * planLayerSpacing; // Left to right
+                    for (var nodeIdx = 0; nodeIdx < layer.neurons.length; nodeIdx++) {
+                        var nodeY = planNetY + (nodeIdx - 2) * planNodeSpacing;
+                        planPostNodes.push({
+                            x: layerX,
+                            y: nodeY,
+                            layerIdx: layerIdx,
+                            nodeIdx: nodeIdx,
+                            color: '#a855f7' // Purple for Plan networks
+                        });
+                    }
+                }
+
+                // Draw connections within pre-network (only if Plan filter active or ALL)
+                if (activeStrategy === 'ALL' || activeStrategy === 2) {
+                    // Pre layers connections
+                    for (var i = 0; i < planPreNodes.length; i++) {
+                        var node = planPreNodes[i];
+                        if (node.layerIdx > 0) {
+                            // Connect to previous layer
+                            var prevLayerStart = (node.layerIdx - 1) * 5;
+                            for (var j = 0; j < 5; j++) {
+                                var prevNode = planPreNodes[prevLayerStart + j];
+                                var w = brain.planPreLayers[node.layerIdx].neurons[node.nodeIdx].weights[j] || 0;
+                                drawSingleLine(prevNode, node, w, '#a855f7');
+                            }
+                        }
+                    }
+
+                    // Connect last pre layer to Plan node
+                    var lastPreLayerStart = 2 * 5; // Layer 2
+                    for (var j = 0; j < 5; j++) {
+                        var preNode = planPreNodes[lastPreLayerStart + j];
+                        drawSingleLine(preNode, planNode, 0.5, '#a855f7');
+                    }
+
+                    // Connect Plan node to first post layer
+                    for (var j = 0; j < 5; j++) {
+                        var postNode = planPostNodes[j]; // First layer
+                        drawSingleLine(planNode, postNode, 0.5, '#a855f7');
+                    }
+
+                    // Post layers connections
+                    for (var i = 0; i < planPostNodes.length; i++) {
+                        var node = planPostNodes[i];
+                        if (node.layerIdx > 0) {
+                            var prevLayerStart = (node.layerIdx - 1) * 5;
+                            for (var j = 0; j < 5; j++) {
+                                var prevNode = planPostNodes[prevLayerStart + j];
+                                var w = brain.planPostLayers[node.layerIdx].neurons[node.nodeIdx].weights[j] || 0;
+                                drawSingleLine(prevNode, node, w, '#a855f7');
+                            }
+                        }
+                    }
+
+                    // Connect last post layer to execution (visual only)
+                    var lastPostLayerStart = 2 * 5;
+                    var execFirstStage = stages[stratCount + 2]; // After bottleneck
+                    if (execFirstStage) {
+                        for (var j = 0; j < 5; j++) {
+                            var postNode = planPostNodes[lastPostLayerStart + j];
+                            // Connect to a few exec nodes
+                            for (var e = 0; e < Math.min(3, execFirstStage.length); e++) {
+                                drawSingleLine(postNode, execFirstStage[e], 0.3, '#a855f7');
+                            }
+                        }
+                    }
+                }
+
+                // Draw pre-network nodes
+                planPreNodes.forEach(n => {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, 3, 0, 2 * Math.PI);
+                    ctx.fillStyle = n.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                });
+
+                // Draw post-network nodes
+                planPostNodes.forEach(n => {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, 3, 0, 2 * Math.PI);
+                    ctx.fillStyle = n.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                });
+
+                // Labels
+                ctx.fillStyle = '#a855f7';
+                ctx.textAlign = "center";
+                ctx.font = 'bold 9px Arial';
+                ctx.fillText("Pre", preStartX - planLayerSpacing, planNetY - 30);
+                ctx.fillText("Post", postStartX + planLayerSpacing, planNetY - 30);
+            }
 
         }
 

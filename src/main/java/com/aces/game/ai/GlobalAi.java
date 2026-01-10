@@ -32,9 +32,21 @@ public class GlobalAi {
                     outputSize = INSTANCE.getOutputLayer().getNeurons().size();
                 }
 
-                if (checkSize != 38 || execSize != 45 || outputSize != 5) {
+                // Verify Bottleneck Size (should be 36: 32 Strategy + 4 Aggro)
+                int bnSize = 0;
+                if (INSTANCE.getStrategyBottleneck() != null && !INSTANCE.getStrategyBottleneck().getNeurons().isEmpty()) {
+                    bnSize = INSTANCE.getStrategyBottleneck().getNeurons().get(0).getWeights().size();
+                }
+
+                // Verify Plan Pre-Layers exist (3 layers, 5 neurons each)
+                boolean hasPlanLayers = INSTANCE.getPlanPreLayers() != null 
+                    && INSTANCE.getPlanPreLayers().size() == 3
+                    && INSTANCE.getPlanPreLayers().get(0).getNeurons().size() == 5;
+
+                // Expected execution input size: 3 (strategy) + 5 (planPost) + 42 (inputs) = 50
+                if (checkSize != 38 || execSize != 50 || outputSize != 5 || bnSize != 36 || !hasPlanLayers) {
                     System.out.println("GlobalAi: Mismatched brain topology (In=" + checkSize + ", ExecIn=" + execSize
-                            + ", Out=" + outputSize + "). Resetting to Aggro-enhanced architecture.");
+                            + ", Out=" + outputSize + ", Bn=" + bnSize + ", PlanLayers=" + hasPlanLayers + "). Resetting to new architecture with Plan networks.");
                     INSTANCE = new NeuralNetwork(42, 5);
                 }
             } else {
