@@ -12,7 +12,7 @@ public class AiInputMapper {
     /**
      * Converts the current GameState into a normalized list of inputs (0.0 - 1.0).
      *
-     * Fixed Input Size: 42
+     * Fixed Input Size: 96
      * Structure:
      * [0] Player Count
      * [1] My Position (Turn Order)
@@ -22,7 +22,8 @@ public class AiInputMapper {
      * [35] Draw Pile Size
      * [36] Bottom Rank
      * [37] Bottom Suit
-     * [38-41] Aggro-Specific (DistDiff, AvgOppDist, MinDist, ClosestPlayer)
+     * [38-91] Specific Hand Cards
+     * [92-95] Aggro-Specific (DistDiff, AvgOppDist, MinDist, ClosestPlayer)
      */
     public static List<Double> extractInputs(GameState state, Player self) {
         List<Double> inputs = new ArrayList<>();
@@ -69,14 +70,24 @@ public class AiInputMapper {
         inputs.add(state.getDrawPile().size() / 54.0);
 
         // Card under Deck
-        inputs.add(normalizeRank(state.getBottomFacingCard()));
-        if (state.getBottomFacingCard() != null) {
-            inputs.add(normalizeSuit(state.getBottomFacingCard()));
+        inputs.add(normalizeRank(state.getCardUnderDeck()));
+        if (state.getCardUnderDeck() != null) {
+            inputs.add(normalizeSuit(state.getCardUnderDeck()));
         } else {
             inputs.add(0.0);
         }
 
-        // === AGGRO-SPECIFIC INPUTS (Index 38-41) ===
+        // === HAND SPECIFIC INPUTS (Index 38-91) ===
+        double[] handInputs = new double[54];
+        for (Card c : self.getHand()) {
+            int idx = getCardIndex(c);
+            handInputs[idx] += 1.0;
+        }
+        for (double v : handInputs) {
+            inputs.add(v);
+        }
+
+        // === AGGRO-SPECIFIC INPUTS (Index 92-95) ===
         // Calculate distance to Ace for self and all opponents
         double myDistToAce = getDistanceToAce(self);
         double totalOppDist = 0;
@@ -97,22 +108,18 @@ public class AiInputMapper {
 
         double avgOppDist = (playerCount > 1) ? totalOppDist / (playerCount - 1) : 14.0;
 
-        // [38] DistDiff: My distance minus avg opponent distance (negative = I'm ahead)
+        // [92] DistDiff: My distance minus avg opponent distance (negative = I'm ahead)
         inputs.add((myDistToAce - avgOppDist) / 14.0);
 
-        // [39] AvgOppDist: Average opponent distance to Ace
+        // [93] AvgOppDist: Average opponent distance to Ace
         inputs.add(avgOppDist / 14.0);
 
-        // [40] MinDist: Smallest distance to Ace among all players
+        // [94] MinDist: Smallest distance to Ace among all players
         inputs.add(minDist / 14.0);
 
-        // [41] ClosestPlayer: Relative position of closest player (0=self,
+        // [95] ClosestPlayer: Relative position of closest player (0=self,
         // 1-7=opponents)
         inputs.add(closestPlayerIdx / 7.0);
-
-        // === HOARD-SPECIFIC INPUT REMOVED TO MATCH 42 INPUTS ===
-        // [42] SelfHandSize removed
-
 
         return inputs;
     }
@@ -121,7 +128,7 @@ public class AiInputMapper {
      * Calculate distance to Ace (how many ranks away from Ace).
      * Ace = 0 (already there), Two = 1, ... King = 12, Empty stack = 14.
      */
-    private static double getDistanceToAce(Player p) {
+    public static double getDistanceToAce(Player p) {
         Card top = p.getTopStack();
         if (top == null)
             return 14.0; // No stack = max distance
@@ -183,5 +190,44 @@ public class AiInputMapper {
             case DIAMONDS -> 1.0;
             default -> 0.0;
         };
+    }
+
+    /**
+     * Maps any valid standard deck card to a unique integer from 0 to 53.
+     * Order: Spades (0-12), Hearts (13-25), Clubs (26-38), Diamonds (39-51), Jokers (52, 53).
+     * Inside each suit, ranks go TWO (0) to ACE (12).
+     */
+    public static int getCardIndex(Card c) {
+        if (c.getRank() == Card.Rank.JOKER) {
+            // Technically deck has 2 identical jokers, we can just return 52 for both for action mapping purposes
+            return 52;
+        }
+        
+        int suitOffset = switch (c.getSuit()) {
+            case SPADES -> 0;
+            case HEARTS -> 13;
+            case CLUBS -> 26;
+            case DIAMONDS -> 39;
+            case JOKER -> 52; // Fallback
+        };
+        
+        int rankOffset = switch (c.getRank()) {
+            case TWO -> 0;
+            case THREE -> 1;
+            case FOUR -> 2;
+            case FIVE -> 3;
+            case SIX -> 4;
+            case SEVEN -> 5;
+            case EIGHT -> 6;
+            case NINE -> 7;
+            case TEN -> 8;
+            case JACK -> 9;
+            case QUEEN -> 10;
+            case KING -> 11;
+            case ACE -> 12;
+            case JOKER -> 0; // Handled above
+        };
+        
+        return suitOffset + rankOffset;
     }
 }

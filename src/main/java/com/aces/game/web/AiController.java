@@ -18,9 +18,19 @@ import java.util.Map;
 public class AiController {
 
     private final GameService gameService;
+    private final com.aces.game.ai.BackgroundTrainer backgroundTrainer;
 
-    public AiController(GameService gameService) {
+    public AiController(GameService gameService, com.aces.game.ai.BackgroundTrainer backgroundTrainer) {
         this.gameService = gameService;
+        this.backgroundTrainer = backgroundTrainer;
+    }
+
+    @GetMapping("/ai/training-status")
+    public Map<String, Object> getTrainingStatus() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("isRunning", backgroundTrainer.isRunning());
+        response.put("gamesPlayed", backgroundTrainer.getGamesPlayed());
+        return response;
     }
 
     @GetMapping("/ai/state/{playerId}")
@@ -47,9 +57,6 @@ public class AiController {
 
             if (p != null) {
                 NeuralNetwork brain = GlobalAi.getInstance();
-
-                // Live Training
-                brain.mutate(0.1, 0.05);
 
                 // Inputs
                 List<Double> inputs = AiInputMapper.extractInputs(game, p);

@@ -115,6 +115,55 @@
                 <button type="submit" class="start-btn">Join Table</button>
             </form>
         </div>
+
+        <!-- Background Training Indicator -->
+        <div id="trainingIndicator"
+            style="display:none; margin-top:2rem; background:rgba(0,0,0,0.5); padding:1rem 2rem; border-radius:30px; border:2px solid #a855f7; color:#e2e8f0; font-weight:bold; align-items:center; gap:10px; box-shadow:0 0 15px rgba(168,85,247,0.4);">
+            <span style="font-size:1.5rem; animation: pulse 1.5s infinite;">🧠</span>
+            <span>Network Training Active (<span id="gamesPlayed">0</span> games)</span>
+        </div>
+
+        <style>
+            @keyframes pulse {
+                0% {
+                    transform: scale(1);
+                    opacity: 1;
+                }
+
+                50% {
+                    transform: scale(1.2);
+                    opacity: 0.7;
+                }
+
+                100% {
+                    transform: scale(1);
+                    opacity: 1;
+                }
+            }
+        </style>
+
+        <script>
+            function checkTrainingStatus() {
+                fetch('/ai/training-status')
+                    .then(response => response.json())
+                    .then(data => {
+                        const indicator = document.getElementById('trainingIndicator');
+                        const gamesCount = document.getElementById('gamesPlayed');
+
+                        if (data.isRunning) {
+                            indicator.style.display = 'flex';
+                            gamesCount.textContent = data.gamesPlayed;
+                        } else {
+                            indicator.style.display = 'none';
+                        }
+                    })
+                    .catch(err => console.error('Error fetching training status:', err));
+            }
+
+            // Check immediately, then every 2 seconds
+            checkTrainingStatus();
+            setInterval(checkTrainingStatus, 2000);
+        </script>
     </div>
 </body>
 

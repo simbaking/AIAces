@@ -58,6 +58,7 @@ public class GameState {
     // CPU Turn Animation Support
     private boolean cpuTurnPending = false;
     private String lastAction = ""; // Describes what the last player did
+    private Card cpuLastDrawnCard = null; // Track the card CPU just drew (for face-up display)
 
     // Turn order mechanics
     private int playDirection = 1; // 1 = forward, -1 = reverse
@@ -66,8 +67,8 @@ public class GameState {
     // For 8 card effect in 3+ players (store the selected target)
     private String eightTargetPlayerId;
 
-    // The visible card at the bottom of the draw pile
-    private Card bottomFacingCard;
+    // The visible card under the draw deck (determines which 7s are active)
+    private Card cardUnderDeck;
 
     // For 7 card effect (store the selected target)
     private String sevenTargetPlayerId;
@@ -92,12 +93,12 @@ public class GameState {
         this.jokerPickCount = jokerPickCount;
     }
 
-    public Card getBottomFacingCard() {
-        return bottomFacingCard;
+    public Card getCardUnderDeck() {
+        return cardUnderDeck;
     }
 
-    public void setBottomFacingCard(Card bottomFacingCard) {
-        this.bottomFacingCard = bottomFacingCard;
+    public void setCardUnderDeck(Card cardUnderDeck) {
+        this.cardUnderDeck = cardUnderDeck;
     }
 
     public String getSevenTargetPlayerId() {

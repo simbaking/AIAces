@@ -12,6 +12,12 @@ public class GameService {
 
     // Simple in-memory store for now
     private GameState defaultGame;
+
+    private final com.aces.game.ai.BackgroundTrainer backgroundTrainer;
+
+    public GameService(com.aces.game.ai.BackgroundTrainer backgroundTrainer) {
+        this.backgroundTrainer = backgroundTrainer;
+    }
     // initialCpuCount is stored in GameState effectively, but we can keep a default
     // here if needed.
 
@@ -26,6 +32,9 @@ public class GameService {
     }
 
     public void startGame(String playerName, int cpuCount) {
+        // Stop background training if running
+        backgroundTrainer.stop();
+
         defaultGame = new GameState();
         defaultGame.setInitialCpuCount(cpuCount);
         defaultGame.setPhase(GameState.Phase.PLAYING);
@@ -118,23 +127,51 @@ public class GameService {
         // removes top (last item).
         // So bottom of deck is index 0.
         if (!game.getDrawPile().isEmpty()) {
-            game.setBottomFacingCard(game.getDrawPile().get(0));
+            // Ensure bottom card is not a Joker (it decides which 7s are active)
+            while (game.getDrawPile().get(0).getRank() == Card.Rank.JOKER && game.getDrawPile().size() > 1) {
+                Collections.shuffle(game.getDrawPile());
+            }
+            game.setCardUnderDeck(game.getDrawPile().get(0));
         }
     }
 
     public void reshuffleDeck() {
-        if (!defaultGame.getDiscardPile().isEmpty()) {
-            defaultGame.setGameMessage("Reshuffling discards...");
-            System.out.println("Reshuffling deck...");
+        if (!defaultGame.getDiscardPile().isEmpty() || defaultGame.getDrawPile().isEmpty()) {
+            // Check if we need to add a new deck
+            if (defaultGame.getDiscardPile().size() < 20) {
+                defaultGame.setGameMessage("Deck empty! Reshuffling discards AND adding a fresh deck...");
+                System.out.println("Reshuffling with fewer than 20 cards - adding an extra deck!");
+
+                // Add all 52 standard cards (one of each)
+                for (Card.Suit suit : Card.Suit.values()) {
+                    if (suit == Card.Suit.JOKER)
+                        continue; // Skip joker suit
+                    for (Card.Rank rank : Card.Rank.values()) {
+                        if (rank == Card.Rank.JOKER)
+                            continue; // Skip joker rank
+                        defaultGame.getDrawPile().add(new Card(suit, rank));
+                    }
+                }
+            
+                // Add exactly 2 Jokers
+                defaultGame.getDrawPile().add(new Card(Card.Suit.JOKER, Card.Rank.JOKER));
+                defaultGame.getDrawPile().add(new Card(Card.Suit.JOKER, Card.Rank.JOKER));
+            } else {
+                defaultGame.setGameMessage("Reshuffling discards...");
+                System.out.println("Reshuffling deck...");
+            }
 
             // Move discard to draw
             defaultGame.getDrawPile().addAll(defaultGame.getDiscardPile());
             defaultGame.getDiscardPile().clear();
+            
+            // Clear all player individual discard piles to prevent duplications
+            for (Player p : defaultGame.getPlayers()) {
+                p.getDiscardPile().clear();
+            }
+
             Collections.shuffle(defaultGame.getDrawPile());
 
-            if (!defaultGame.getDrawPile().isEmpty()) {
-                defaultGame.setBottomFacingCard(defaultGame.getDrawPile().get(0));
-            }
         }
     }
 
@@ -212,6 +249,11 @@ public class GameService {
         if (cardIndex < 0 || cardIndex >= p.getHand().size())
             return;
 
+        List<Double> preMoveInputs = null;
+        if (p.isPc()) {
+            preMoveInputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, p);
+        }
+
         Card card = p.getHand().get(cardIndex);
 
         // Validation Logic
@@ -230,6 +272,11 @@ public class GameService {
             p.getStack().add(card);
             defaultGame.setHasPlayedToStack(true);
 
+            if (p.isPc() && preMoveInputs != null) {
+                int actionIndex = 4 + com.aces.game.ai.AiInputMapper.getCardIndex(card);
+                com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, actionIndex, 1.0, 100.0);
+            }
+
             // If playing a Joker, need to choose what value it represents
             if (card.getRank() == Card.Rank.JOKER) {
                 // Store card index for reference (it's already on stack)
@@ -246,13 +293,19 @@ public class GameService {
             // Check Win
             if (card.getRank() == Card.Rank.ACE) {
                 defaultGame.setGameOver(true);
+                // Start background training when game ends
+                backgroundTrainer.start();
                 defaultGame.setWinner(p);
                 defaultGame.setGameMessage("WINNER! " + p.getName() + " placed the Ace!");
                 return;
             }
 
-            defaultGame.setGameMessage("Played " + card.getDisplayString() + " to stack. Play another or Pass.");
-            // endTurn(); // Removed to allow multiple card plays
+            if (!hasValidStackPlay(p)) {
+                defaultGame.setGameMessage("Played " + card.getDisplayString() + ". No valid plays left, auto-passing.");
+                endTurn();
+            } else {
+                defaultGame.setGameMessage("Played " + card.getDisplayString() + " to stack. Play another or Pass.");
+            }
         } else {
             defaultGame.setGameMessage("Invalid move! Must be sequential (+/- 1).");
         }
@@ -320,6 +373,25 @@ public class GameService {
         return sb.toString();
     }
 
+    private boolean hasValidStackPlay(Player p) {
+        if (p.getHand().isEmpty()) return false;
+        Card top = p.getTopStack();
+        if (top == null) {
+            for (Card c : p.getHand()) {
+                if (c.getRank() != Card.Rank.JOKER && c.getRank() != Card.Rank.ACE) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        for (Card c : p.getHand()) {
+            if (isSequenceValid(p, top, c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void skipTurn(String playerId) {
         Player p = defaultGame.getCurrentPlayer();
         if (!p.getId().equals(playerId)) {
@@ -331,13 +403,34 @@ public class GameService {
             return;
         }
 
+        List<Double> preMoveInputs = null;
+        if (p.isPc()) {
+            preMoveInputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, p);
+        }
+
         if (defaultGame.isHasPlayedToStack()) {
             defaultGame.setGameMessage(p.getName() + " passed turn.");
+            if (p.isPc() && preMoveInputs != null) {
+                com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, 0, 1.0, 100.0);
+            }
             endTurn();
         } else {
             // Allow passing if user chooses to (e.g. stuck)
             defaultGame.setGameMessage(p.getName() + " passed turn (no play made).");
+            if (p.isPc() && preMoveInputs != null) {
+                com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, 0, 1.0, 100.0);
+            }
             endTurn();
+        }
+    }
+
+    private int getDiscardActionIndex(Card card) {
+        if (isInteractiveEffect(card)) return 2; // D-ATK
+        switch (card.getRank()) {
+            case FOUR: case JACK: case KING: case TWO: case NINE:
+                return 1; // D-SKIP / Instant
+            default:
+                return 3; // D-NRM
         }
     }
 
@@ -365,7 +458,19 @@ public class GameService {
 
         if (cardIndex < 0 || cardIndex >= p.getHand().size())
             return;
+
+        List<Double> preMoveInputs = null;
+        if (p.isPc()) {
+            preMoveInputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, p);
+        }
+
         Card card = p.getHand().remove(cardIndex);
+
+        if (p.isPc() && preMoveInputs != null) {
+            int actionIndex = getDiscardActionIndex(card);
+            com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, actionIndex, 1.0, 100.0);
+        }
+
         p.getDiscardPile().add(card);
         defaultGame.getDiscardPile().add(card); // Add to global discard for reshuffling and effects
 
@@ -577,6 +682,8 @@ public class GameService {
                                 // Check Win
                                 if (picked.getRank() == Card.Rank.ACE) {
                                     defaultGame.setGameOver(true);
+                                    // Start background training when game ends
+                                    backgroundTrainer.start();
                                     defaultGame.setWinner(p);
                                     defaultGame.setGameMessage("WINNER! " + p.getName() + " placed the Ace via Joker!");
                                     defaultGame.setEffectState(GameState.EffectState.NONE);
@@ -624,22 +731,13 @@ public class GameService {
                         .findFirst().orElse(null);
 
                 if (target != null && !target.getId().equals(p.getId())) {
-                    // For 8 in 3+ players, go to source selection
-                    if (defaultGame.getEffectSourceRank() == Card.Rank.EIGHT &&
-                            defaultGame.getPlayers().size() > 2) {
-                        defaultGame.setEightTargetPlayerId(target.getId());
-                        defaultGame.setEffectState(GameState.EffectState.EIGHT_CHOOSE_SOURCE);
-                        defaultGame.setGameMessage(
-                                "Choose: steal from " + target.getName() + "'s Hand, Stack, or Discard?");
-                    } else {
-                        applyTargetedEffect(p, target, defaultGame.getEffectSourceRank());
-                        // Check if effect changed state (e.g., EIGHT goes to EIGHT_PICK_CARD)
-                        if (defaultGame.getEffectState() == GameState.EffectState.NONE ||
-                                defaultGame.getEffectState() == GameState.EffectState.SELECT_TARGET) {
-                            defaultGame.setEffectState(GameState.EffectState.NONE);
-                            endTurn();
-                        }
-                        // Otherwise, a new state was set (like EIGHT_PICK_CARD), don't end turn
+                    // Always route to applyTargetedEffect, which now handles 3+ player logic internally
+                    applyTargetedEffect(p, target, defaultGame.getEffectSourceRank());
+                    // Check if effect changed state (e.g., EIGHT goes to EIGHT_PICK_CARD)
+                    if (defaultGame.getEffectState() == GameState.EffectState.NONE ||
+                            defaultGame.getEffectState() == GameState.EffectState.SELECT_TARGET) {
+                        defaultGame.setEffectState(GameState.EffectState.NONE);
+                        endTurn();
                     }
                 }
                 break;
@@ -700,23 +798,23 @@ public class GameService {
                 break;
 
             case EIGHT_PICK_CARD:
-                // actionData = card index in target's hand
-                try {
-                    int cardIdx = Integer.parseInt(actionData);
-                    String pickTargetId = defaultGame.getEightTargetPlayerId();
-                    Player pickTarget = defaultGame.getPlayers().stream()
-                            .filter(pl -> pl.getId().equals(pickTargetId))
-                            .findFirst().orElse(null);
+                // actionData may contain pick index from frontend, but rules mandate RANDOM theft
+                String pickTargetId = defaultGame.getEightTargetPlayerId();
+                Player pickTarget = defaultGame.getPlayers().stream()
+                        .filter(pl -> pl.getId().equals(pickTargetId))
+                        .findFirst().orElse(null);
 
-                    if (pickTarget != null && cardIdx >= 0 && cardIdx < pickTarget.getHand().size()) {
-                        Card stolen = pickTarget.getHand().remove(cardIdx);
-                        p.getHand().add(stolen);
-                        defaultGame.setGameMessage(
-                                "EIGHT! Took " + stolen.getDisplayString() + " from " + pickTarget.getName() + "!");
-                    }
-                } catch (NumberFormatException e) {
+                if (pickTarget != null && !pickTarget.getHand().isEmpty()) {
+                    java.util.Random rnd = new java.util.Random();
+                    int randomPickIdx = rnd.nextInt(pickTarget.getHand().size());
+
+                    Card stolen = pickTarget.getHand().remove(randomPickIdx);
+                    // Rules imply stolen card goes into the active player's hand
+                    p.getHand().add(stolen);
+                    defaultGame.setGameMessage(
+                            "EIGHT! Randomly stole " + stolen.getDisplayString() + " from " + pickTarget.getName() + "!");
                 }
-
+                
                 defaultGame.setEightTargetPlayerId(null);
                 defaultGame.setEffectState(GameState.EffectState.NONE);
                 endTurn();
@@ -751,9 +849,14 @@ public class GameService {
                     }
 
                     p.setJokerStackValue(chosenRank);
-                    defaultGame.setGameMessage("Joker is now acting as " + chosenRank + "!");
                     defaultGame.setEffectState(GameState.EffectState.NONE);
-                    endTurn();
+                    
+                    if (!hasValidStackPlay(p)) {
+                        defaultGame.setGameMessage("Joker is acting as " + chosenRank + ". No valid plays left, auto-passing.");
+                        endTurn();
+                    } else {
+                        defaultGame.setGameMessage("Joker is now acting as " + chosenRank + "!");
+                    }
                 } catch (IllegalArgumentException e) {
                     defaultGame.setGameMessage("Invalid rank selection!");
                 }
@@ -774,6 +877,16 @@ public class GameService {
                                 "Placed " + gift.getDisplayString() + " on " + passTarget.getName() + "'s stack!");
                         defaultGame.setSevenTargetPlayerId(null);
                         defaultGame.setEffectState(GameState.EffectState.NONE);
+                        
+                        // Check Win
+                        if (gift.getRank() == Card.Rank.ACE) {
+                            defaultGame.setGameOver(true);
+                            // Start background training when game ends
+                            backgroundTrainer.start();
+                            defaultGame.setWinner(passTarget);
+                            defaultGame.setGameMessage("WINNER! " + passTarget.getName() + " placed the Ace!");
+                        }
+                        
                         endTurn();
                     }
                 } catch (NumberFormatException e) {
@@ -783,7 +896,7 @@ public class GameService {
     }
 
     private boolean isValidSeven(Card seven) {
-        Card bottom = defaultGame.getBottomFacingCard();
+        Card bottom = defaultGame.getCardUnderDeck();
         if (bottom == null)
             return true; // Fallback
 
@@ -835,18 +948,26 @@ public class GameService {
                     } else {
                         defaultGame.setGameMessage(target.getName() + " has no cards in hand!");
                         defaultGame.setEffectState(GameState.EffectState.NONE);
-                        endTurn();
                     }
                 } else {
                     // 3+ Players: Choose Source (Hand, Stack, Discard)
-                    if (hasHand || hasStack || hasDiscard) {
+                    // Rule: Cannot take from stack if only 1 card. Cannot take empty.
+                    boolean canTakeStack = target.getStack().size() > 1;
+                    
+                    if (hasHand || canTakeStack || hasDiscard) {
                         defaultGame.setEffectState(GameState.EffectState.EIGHT_CHOOSE_SOURCE);
+                        // Make grammar dynamic based on what's actually available
+                        String options = "";
+                        if (hasHand) options += "Hand, ";
+                        if (canTakeStack) options += "Stack, ";
+                        if (hasDiscard) options += "Discard";
+                        if (options.endsWith(", ")) options = options.substring(0, options.length() - 2);
+                        
                         defaultGame.setGameMessage(
-                                "Choose where to steal from " + target.getName() + ": Hand, Stack, or Discard!");
+                                "Choose where to steal from " + target.getName() + ": " + options + "?");
                     } else {
-                        defaultGame.setGameMessage(target.getName() + " has no cards to steal!");
+                        defaultGame.setGameMessage(target.getName() + " has no eligible cards to steal!");
                         defaultGame.setEffectState(GameState.EffectState.NONE);
-                        endTurn();
                     }
                 }
                 break;
@@ -857,14 +978,13 @@ public class GameService {
                     for (int i = 0; i < 3; i++) {
                         taken.add(target.getStack().remove(target.getStack().size() - 1));
                     }
-                    // Add to discard pile (they're destroyed)
-                    defaultGame.getDiscardPile().addAll(taken);
+                    // Add to the hand of the player who played the TEN
+                    source.getHand().addAll(taken);
                     defaultGame.setGameMessage("TEN! Took 3 cards from " + target.getName() + "'s stack!");
                 } else {
                     defaultGame.setGameMessage(target.getName() + "'s stack needs 4+ cards!");
                 }
                 defaultGame.setEffectState(GameState.EffectState.NONE);
-                endTurn();
                 break;
             case SEVEN: // Sabotage: Put card from hand to target stack
                 // Check if valid 7 first
@@ -878,7 +998,6 @@ public class GameService {
                 if (defaultGame.getDiscardPile().isEmpty()) {
                     defaultGame.setGameMessage("7 discarded but no card in discard pile. No effect.");
                     defaultGame.setEffectState(GameState.EffectState.NONE);
-                    endTurn();
                     break;
                 }
 
@@ -894,7 +1013,6 @@ public class GameService {
                 } else {
                     defaultGame.setGameMessage("7 played, but didn't match bottom card condition. No effect.");
                     defaultGame.setEffectState(GameState.EffectState.NONE);
-                    endTurn();
                 }
                 break;
             default:
@@ -952,8 +1070,10 @@ public class GameService {
 
     private void endTurn() {
         if (!defaultGame.isGameOver()) {
+            // Mutate neural network once per completed turn
+            com.aces.game.ai.GlobalAi.getInstance().mutate(0.1, 0.05);
+
             defaultGame.nextTurn();
-            // If next player is CPU, set pending flag for animated step execution
             // If next player is CPU, set pending flag for animated step execution
             if (!defaultGame.getCurrentPlayer().isPc()) {
                 defaultGame.setCpuTurnPending(true);
@@ -963,12 +1083,24 @@ public class GameService {
         }
     }
 
+    /** Sleeps for the given delay (clamped 0-5000ms). */
+    private void cpuDelay(int delayMs) {
+        int clamped = Math.max(0, Math.min(5000, delayMs));
+        if (clamped <= 0) return;
+        try {
+            Thread.sleep(clamped);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     /**
      * Executes ONE step of a CPU turn. Called by controller for animated
-     * progression.
-     * Returns true if the CPU turn is complete, false if more steps needed.
+     * progression. Split into draw phase and action phase with page refresh
+     * in between so the drawn card is visible.
+     * @param delayMs milliseconds to pause after each sub-action.
      */
-    public void processCpuStep() {
+    public void processCpuStep(int delayMs) {
         if (defaultGame.getPhase() != GameState.Phase.PLAYING)
             return;
 
@@ -976,17 +1108,55 @@ public class GameService {
         if (current.isPc()) // If human, don't process
             return;
 
-        // Add Artificial Delay for Visuals
-        try {
-            Thread.sleep(1500);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        // Initial delay before CPU starts acting
+        cpuDelay(delayMs);
+
+        // PHASE 1: Draw phase - draw card and return so the page refreshes
+        if (!defaultGame.isHasDrawn()) {
+            if (defaultGame.getDrawPile().isEmpty())
+                reshuffleDeck();
+            if (!defaultGame.getDrawPile().isEmpty()) {
+                Card drawn = defaultGame.getDrawPile().pop();
+                current.getHand().add(drawn);
+                defaultGame.setHasDrawn(true);
+                defaultGame.setCpuLastDrawnCard(drawn); // Track for face-up display
+                defaultGame.setLastAction(current.getName() + " drew a card.");
+                defaultGame.setCpuTurnPending(true); // Will trigger another cpu-step call
+            }
+            return; // Return early so page refreshes and shows the drawn card
         }
 
-        executeCpuStep(current);
+        // PHASE 2: Action phase - clear the drawn card highlight and execute
+        defaultGame.setCpuLastDrawnCard(null);
+
+        // PHASE 2a: If there's a pending effect, resolve ONE step and return
+        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+            GameState.EffectState stateBefore = defaultGame.getEffectState();
+            resolveCpuEffect(current);
+            // Safety: if effect state didn't change, force-clear to prevent infinite loop
+            if (defaultGame.getEffectState() == stateBefore) {
+                System.out.println("CPU SAFETY: Effect state stuck at " + stateBefore + ", force-clearing.");
+                defaultGame.setEffectState(GameState.EffectState.NONE);
+                endTurn();
+            }
+            // If more effects remain, keep cpuTurnPending true for next step
+            if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+                defaultGame.setCpuTurnPending(true);
+            } else {
+                // Effects done - set pending based on whose turn it is now
+                if (!defaultGame.getCurrentPlayer().isPc())
+                    defaultGame.setCpuTurnPending(true);
+                else
+                    defaultGame.setCpuTurnPending(false);
+            }
+            return;
+        }
+
+        // PHASE 2b: Normal action (no pending effects)
+        executeCpuStep(current, delayMs);
     }
 
-    private void executeCpuStep(Player cpu) {
+    private void executeCpuStep(Player cpu, int delayMs) {
         // Skip if somehow called for human player
         if (cpu.isPc()) {
             defaultGame.setCpuTurnPending(false);
@@ -996,79 +1166,100 @@ public class GameService {
         if (defaultGame.isGameOver())
             return;
 
-        // 1. Draw Step (Rules: Start of turn always draw if not drawn)
-        if (!defaultGame.isHasDrawn()) {
-            if (defaultGame.getDrawPile().isEmpty())
-                reshuffleDeck();
-            if (!defaultGame.getDrawPile().isEmpty()) {
-                cpu.getHand().add(defaultGame.getDrawPile().pop());
-                defaultGame.setHasDrawn(true);
-                defaultGame.setLastAction(cpu.getName() + " drew a card.");
-            }
-        }
-
         // 2. Brain Decision
         List<Double> inputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, cpu);
         List<Double> outputs = com.aces.game.ai.GlobalAi.getInstance().feedForward(inputs);
 
-        // Find best action
-        int action = 0;
-        double maxVal = -999;
-        for (int i = 0; i < outputs.size(); i++) {
-            if (outputs.get(i) > maxVal) {
-                maxVal = outputs.get(i);
-                action = i;
-            }
-        }
+        // Sort actions by AI confidence
+        List<Integer> sortedActions = new ArrayList<>();
+        for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
+        sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
 
-        /* ACTIONS: 0: PASS, 1: STACK, 2: SKIP, 3: ATTACK, 4: NORMAL */
+        /* ACTIONS: 0: PASS, 1: D-SKIP, 2: D-ATK, 3: D-NRM, 4-57: STACK Specific Card */
+        boolean acted = false;
 
-        if (action == 1) { // PLAY STACK
-            int idx = findBestPlayToStack(cpu);
-            if (idx != -1) {
-                playToStack(cpu.getId(), idx);
-                if (defaultGame.isGameOver())
-                    return;
-                defaultGame.setCpuTurnPending(true);
-                return;
-            }
-        } else if (action >= 2) { // DISCARD (2,3,4)
-            if (defaultGame.isHasPlayedToStack()) {
-                // Must Pass
-            } else {
-                String cat = (action == 2) ? "SKIP" : (action == 3) ? "ATTACK" : "NORMAL";
-                int idx = findBestDiscard(cpu, cat);
-                if (idx == -1 && !cat.equals("NORMAL"))
-                    idx = findBestDiscard(cpu, "NORMAL");
-
-                if (idx != -1) {
-                    discardAndEffect(cpu.getId(), idx);
-                    while (defaultGame.getEffectState() != GameState.EffectState.NONE) {
-                        resolveCpuEffect(cpu);
+        for (int action : sortedActions) {
+            if (action >= 4) { // PLAY STACK Specific Card
+                int targetCardIndex = action - 4;
+                // Does the player have this exact card?
+                int handIdx = -1;
+                for (int i = 0; i < cpu.getHand().size(); i++) {
+                    if (com.aces.game.ai.AiInputMapper.getCardIndex(cpu.getHand().get(i)) == targetCardIndex) {
+                        handIdx = i;
+                        break;
                     }
-                    if (!defaultGame.getCurrentPlayer().isPc())
-                        defaultGame.setCpuTurnPending(false);
-                    else
+                }
+
+                if (handIdx != -1) {
+                    Card card = cpu.getHand().get(handIdx);
+                    // Is it a valid sequence?
+                    Card top = cpu.getTopStack();
+                    boolean valid = false;
+                    if (top == null) {
+                        valid = (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER);
+                    } else {
+                        valid = isSequenceValid(cpu, top, card);
+                    }
+
+                    if (valid) {
+                        // Play it!
+                        playToStack(cpu.getId(), handIdx);
+                        acted = true;
+                        cpuDelay(delayMs); // Delay after stacking
+                        if (defaultGame.isGameOver()) return;
                         defaultGame.setCpuTurnPending(true);
-                    return;
+                        break; // Done acting
+                    }
+                }
+            } else if (action >= 1 && action <= 3) { // DISCARD (1: SKIP, 2: ATTACK, 3: NORMAL)
+                if (defaultGame.isHasPlayedToStack()) {
+                    // Must Pass
+                } else {
+                    String cat = (action == 1) ? "SKIP" : (action == 2) ? "ATTACK" : "NORMAL";
+                    int idx = findBestDiscard(cpu, cat);
+                    if (idx == -1 && !cat.equals("NORMAL"))
+                        idx = findBestDiscard(cpu, "NORMAL");
+
+                    if (idx != -1) {
+                        discardAndEffect(cpu.getId(), idx);
+                        acted = true;
+                        // If there are effects to resolve, return and let next cpu-step handle them
+                        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+                            defaultGame.setCpuTurnPending(true);
+                        } else if (!defaultGame.getCurrentPlayer().isPc()) {
+                            defaultGame.setCpuTurnPending(true);
+                        } else {
+                            defaultGame.setCpuTurnPending(false);
+                        }
+                        break; // Done acting
+                    }
+                }
+            } else if (action == 0) { // PASS
+                if (defaultGame.isHasPlayedToStack()) {
+                    acted = true;
+                    skipTurn(cpu.getId());
+                    break;
                 }
             }
         }
 
-        // Fallback / Pass
-        if (defaultGame.isHasPlayedToStack()) {
-            skipTurn(cpu.getId());
-        } else {
-            if (!cpu.getHand().isEmpty()) {
-                int idx = findBestDiscard(cpu, "NORMAL");
-                if (idx != -1) {
-                    discardAndEffect(cpu.getId(), idx);
-                    while (defaultGame.getEffectState() != GameState.EffectState.NONE)
-                        resolveCpuEffect(cpu);
-                    return;
+        // Fallback / Pass if network completely failed to pick a valid move
+        if (!acted && !defaultGame.isGameOver()) {
+            if (defaultGame.isHasPlayedToStack()) {
+                skipTurn(cpu.getId());
+            } else {
+                if (!cpu.getHand().isEmpty()) {
+                    int idx = findBestDiscard(cpu, "NORMAL");
+                    if (idx != -1) {
+                        discardAndEffect(cpu.getId(), idx);
+                        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+                            defaultGame.setCpuTurnPending(true);
+                        }
+                        return;
+                    }
                 }
+                skipTurn(cpu.getId());
             }
-            skipTurn(cpu.getId());
         }
     }
 
@@ -1108,12 +1299,15 @@ public class GameService {
                     below = cpu.getStack().get(cpu.getStack().size() - 2);
                 }
 
-                String choice = "SEVEN"; // Default fallback
+                String choice = null;
                 if (below != null) {
-                    // Try to pick one that allows next play? Or just any valid adjacent.
-                    // Simple logic: pick upper adjacent if valid
-                    int ord = below.getRank().ordinal();
-                    // Try upper
+                    // Use jokerStackValue if the card below is also a Joker
+                    Card.Rank belowRank = below.getRank();
+                    if (belowRank == Card.Rank.JOKER && cpu.getJokerStackValue() != null) {
+                        belowRank = cpu.getJokerStackValue();
+                    }
+                    int ord = belowRank.ordinal();
+                    // Try upper adjacent
                     if (ord < Card.Rank.values().length - 1) {
                         Card.Rank upper = Card.Rank.values()[ord + 1];
                         if (upper != Card.Rank.TWO && upper != Card.Rank.ACE && upper != Card.Rank.KING
@@ -1121,19 +1315,24 @@ public class GameService {
                             choice = upper.name();
                         }
                     }
-                    // Try lower if upper invalid
-                    if (choice.equals("SEVEN")) {
-                        if (ord > 0) {
-                            Card.Rank lower = Card.Rank.values()[ord - 1];
-                            if (lower != Card.Rank.TWO && lower != Card.Rank.ACE && lower != Card.Rank.KING
-                                    && lower != Card.Rank.JOKER) {
-                                choice = lower.name();
-                            }
+                    // Try lower adjacent if upper was invalid
+                    if (choice == null && ord > 0) {
+                        Card.Rank lower = Card.Rank.values()[ord - 1];
+                        if (lower != Card.Rank.TWO && lower != Card.Rank.ACE && lower != Card.Rank.KING
+                                && lower != Card.Rank.JOKER) {
+                            choice = lower.name();
                         }
                     }
                 }
 
-                handleInteraction(cpu.getId(), choice);
+                // Fallback: if no valid choice found, force-clear the effect
+                if (choice == null) {
+                    System.out.println("CPU: No valid Joker stack value found, clearing effect.");
+                    defaultGame.setEffectState(GameState.EffectState.NONE);
+                    endTurn();
+                } else {
+                    handleInteraction(cpu.getId(), choice);
+                }
                 break;
             case SEVEN_PASS_CARD:
                 // CPU gives first card in hand
@@ -1157,12 +1356,12 @@ public class GameService {
             case EIGHT_CHOOSE_SOURCE:
                 // Intelligent CPU choice for stealing
                 // Prioritize Stack (if valid) > Hand > Discard
-                String targetId = defaultGame.getEightTargetPlayerId();
+                String eightTargetId = defaultGame.getEightTargetPlayerId();
                 Player eightTarget = defaultGame.getPlayers().stream()
-                        .filter(pl -> pl.getId().equals(targetId))
+                        .filter(pl -> pl.getId().equals(eightTargetId))
                         .findFirst().orElse(null);
 
-                String sourceChoice = "hand"; // Default
+                String sourceChoice = null;
                 if (eightTarget != null) {
                     if (eightTarget.getStack().size() > 1) {
                         sourceChoice = "stack";
@@ -1172,11 +1371,38 @@ public class GameService {
                         sourceChoice = "discard";
                     }
                 }
-                handleInteraction(cpu.getId(), sourceChoice);
+                if (sourceChoice != null) {
+                    handleInteraction(cpu.getId(), sourceChoice);
+                } else {
+                    // Target has nothing to steal, clear effect and end turn
+                    System.out.println("CPU: Eight target has no stealable cards, clearing effect.");
+                    defaultGame.setEightTargetPlayerId(null);
+                    defaultGame.setEffectState(GameState.EffectState.NONE);
+                    endTurn();
+                }
                 break;
             case EIGHT_PICK_CARD:
                 // Blind pick from hand (always pick index 0 for now)
                 handleInteraction(cpu.getId(), "0");
+                break;
+            case JOKER_CHOICE_MODE:
+                // CPU AI: prefer STACK mode if any card in tempBuffer fits the stack sequence,
+                // otherwise use HAND mode to recover a card to hand
+                boolean preferStack = false;
+                Card cpuTop = cpu.getTopStack();
+                for (Card c : defaultGame.getTempBuffer()) {
+                    boolean fits;
+                    if (cpuTop == null) {
+                        fits = (c.getRank() != Card.Rank.JOKER && c.getRank() != Card.Rank.ACE);
+                    } else {
+                        fits = isSequenceValid(cpu, cpuTop, c);
+                    }
+                    if (fits) {
+                        preferStack = true;
+                        break;
+                    }
+                }
+                handleInteraction(cpu.getId(), preferStack ? "STACK" : "HAND");
                 break;
             default:
                 defaultGame.setEffectState(GameState.EffectState.NONE);

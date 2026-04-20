@@ -28,52 +28,56 @@ public class NeuralNetwork {
         this.executionLayers = new ArrayList<>();
 
         // -- Block 1: Strategy Formulation --
-        // 5 Layers that process the standard 38 inputs
-        int strategyWidth = 32;
+        // 9 Layers that process the standard 38 inputs
+        int strategyWidth = 64;
         int standardInputs = 38; // Standard inputs (not counting Aggro-specific)
         strategyLayers.add(new Layer(strategyWidth, standardInputs));
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 8; i++) {
             strategyLayers.add(new Layer(strategyWidth, strategyWidth));
         }
 
         // -- Bottleneck: Strategy Definition --
-        // Aggro neuron: 32 (from Strategy) + 4 (Aggro inputs) = 36 weights
-        // Hoard neuron: 32 (from Strategy) + 0 (Aggro inputs) = only uses 32 weights
-        // Plan neuron: 32 (from Strategy) + 0 (Aggro inputs) = only uses 32 weights
-        // We create all 3 neurons with 36 inputs
+        // Aggro neuron: 64 (from Strategy) + 4 (Aggro inputs) = 68 weights
+        // Hoard neuron: 64 (from Strategy) + 0 (Aggro inputs) = only uses 64 weights
+        // Plan neuron: 64 (from Strategy) + 0 (Aggro inputs) = only uses 64 weights
+        // We create all 3 neurons with 68 inputs
         this.strategyBottleneck = new Layer(3, strategyWidth + 4); // +4 Aggro
 
-        // Zero out Aggro-specific weights (32-35) for Hoard (neuron 1) and Plan (neuron 2)
+        // Zero out Aggro-specific weights (64-67) for Hoard (neuron 1) and Plan (neuron 2)
         for (int n = 1; n <= 2; n++) {
             Neuron neuron = strategyBottleneck.getNeurons().get(n);
             List<Double> w = neuron.getWeights();
-            for (int i = 32; i < 36; i++) {
+            for (int i = 64; i < 68; i++) {
                 w.set(i, 0.0); // No Aggro input connection
             }
         }
 
         // -- Plan-Specific Processing Networks --
-        // 3 layers, 5 neurons each, first layer takes 38 standard inputs
-        int planWidth = 5;
+        // 5 layers, 10 neurons each, first layer takes strategy output (64 values)
+        int planWidth = 10;
         this.planPreLayers = new ArrayList<>();
-        planPreLayers.add(new Layer(planWidth, standardInputs)); // Layer 0: 38 -> 5
-        planPreLayers.add(new Layer(planWidth, planWidth));       // Layer 1: 5 -> 5
-        planPreLayers.add(new Layer(planWidth, planWidth));       // Layer 2: 5 -> 5
+        planPreLayers.add(new Layer(planWidth, strategyWidth)); // Layer 0: 64 (strategy output) -> 10
+        planPreLayers.add(new Layer(planWidth, planWidth));      // Layer 1: 10 -> 10
+        planPreLayers.add(new Layer(planWidth, planWidth));      // New interspersed layer
+        planPreLayers.add(new Layer(planWidth, planWidth));      // Layer 2: 10 -> 10
+        planPreLayers.add(new Layer(planWidth, planWidth));      // New interspersed layer
 
-        // Post layers share weights with pre layers (will be synced)
+        // Post layers share weights with pre layers (will be synced, except layer 0)
         this.planPostLayers = new ArrayList<>();
-        planPostLayers.add(new Layer(planWidth, standardInputs)); // Layer 0: 38 -> 5
-        planPostLayers.add(new Layer(planWidth, planWidth));       // Layer 1: 5 -> 5
-        planPostLayers.add(new Layer(planWidth, planWidth));       // Layer 2: 5 -> 5
+        planPostLayers.add(new Layer(planWidth, planWidth));      // Layer 0: 10 (planPreOut) -> 10
+        planPostLayers.add(new Layer(planWidth, planWidth));      // Layer 1: 10 -> 10
+        planPostLayers.add(new Layer(planWidth, planWidth));      // New interspersed layer
+        planPostLayers.add(new Layer(planWidth, planWidth));      // Layer 2: 10 -> 10
+        planPostLayers.add(new Layer(planWidth, planWidth));      // New interspersed layer
 
         // Sync weights: copy from pre to post
         syncPlanWeights();
 
         // -- Block 2: Tactical Execution --
-        // 5 Layers that act on Strategy
-        // Execution Input Size = 3 (Strategy) + 5 (planPost output) + inputSize (Residual)
+        // 9 Layers that act on Strategy
+        // Execution Input Size = 3 (Strategy) + 10 (planPost output) + inputSize (Residual)
         int executionInputSize = 3 + planWidth + inputSize;
-        int executionWidth = 32;
+        int executionWidth = 64;
 
         Layer execL0 = new Layer(executionWidth, executionInputSize);
         executionLayers.add(execL0);
@@ -86,7 +90,7 @@ public class NeuralNetwork {
             }
         }
 
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 8; i++) {
             executionLayers.add(new Layer(executionWidth, executionWidth));
         }
 
@@ -100,7 +104,8 @@ public class NeuralNetwork {
      */
     public void syncPlanWeights() {
         if (planPreLayers == null || planPostLayers == null) return;
-        for (int layerIdx = 0; layerIdx < planPreLayers.size(); layerIdx++) {
+        // Skip layer 0: pre layer 0 has strategyWidth inputs, post layer 0 has planWidth inputs
+        for (int layerIdx = 1; layerIdx < planPreLayers.size(); layerIdx++) {
             Layer preLayer = planPreLayers.get(layerIdx);
             Layer postLayer = planPostLayers.get(layerIdx);
             for (int neuronIdx = 0; neuronIdx < preLayer.getNeurons().size(); neuronIdx++) {
@@ -133,8 +138,8 @@ public class NeuralNetwork {
             layerActivations.add(currentStrat);
         }
 
-        // 2. Run Plan Pre-Processing Network (38 inputs -> 5 outputs)
-        List<Double> planPreOut = new ArrayList<>(standardInputs);
+        // 2. Run Plan Pre-Processing Network (32 strategy outputs -> 5 outputs)
+        List<Double> planPreOut = new ArrayList<>(currentStrat);
         if (planPreLayers != null) {
             for (Layer l : planPreLayers) {
                 planPreOut = l.feedForward(planPreOut);
@@ -173,10 +178,10 @@ public class NeuralNetwork {
         this.lastStrategyValues = strategyValues;
         layerActivations.add(strategyValues);
 
-        // 5. Run Plan Post-Processing Network (38 inputs -> 5 outputs, same weights as pre)
-        List<Double> planPostOut = new ArrayList<>(standardInputs);
+        // 5. Run Plan Post-Processing Network (planPreOut -> 10 outputs, shared weights from layer 1+)
+        List<Double> planPostOut = new ArrayList<>(planPreOut);
         if (planPostLayers != null) {
-            syncPlanWeights(); // Ensure weights are synced before running
+            syncPlanWeights(); // Ensure weights are synced before running (layers 1+)
             for (Layer l : planPostLayers) {
                 planPostOut = l.feedForward(planPostOut);
             }
@@ -202,7 +207,7 @@ public class NeuralNetwork {
     }
 
     // Backpropagation for Reinforcement Learning
-    public void train(List<Double> inputs, int actionIndex, double reward) {
+    public void train(List<Double> inputs, int actionIndex, double reward, double weightMultiplier) {
         // Re-run feedForward to populate layerActivations just in case context changed
         feedForward(inputs);
 
@@ -215,9 +220,13 @@ public class NeuralNetwork {
         double error = reward - output;
         double delta = error * output * (1 - output);
 
-        double learningRate = 0.2;
+        double learningRate = 0.2 * weightMultiplier;
 
         actionNode.adjustWeights(inputToLast, delta, learningRate);
+    }
+
+    public void train(List<Double> inputs, int actionIndex, double reward) {
+        train(inputs, actionIndex, reward, 1.0);
     }
 
     public void mutate(double rate, double strength) {
@@ -247,6 +256,64 @@ public class NeuralNetwork {
                 }
             }
         }
+    }
+
+    /**
+     * Creates a fully independent deep copy of this neural network.
+     * All layers, neurons, weights, and biases are duplicated so mutations
+     * on the copy do not affect the original.
+     */
+    public NeuralNetwork deepCopy() {
+        NeuralNetwork copy = new NeuralNetwork();
+
+        // Copy strategy layers
+        copy.strategyLayers = new ArrayList<>();
+        for (Layer l : this.strategyLayers) {
+            copy.strategyLayers.add(deepCopyLayer(l));
+        }
+
+        // Copy strategy bottleneck
+        copy.strategyBottleneck = deepCopyLayer(this.strategyBottleneck);
+
+        // Copy plan pre layers
+        if (this.planPreLayers != null) {
+            copy.planPreLayers = new ArrayList<>();
+            for (Layer l : this.planPreLayers) {
+                copy.planPreLayers.add(deepCopyLayer(l));
+            }
+        }
+
+        // Copy plan post layers
+        if (this.planPostLayers != null) {
+            copy.planPostLayers = new ArrayList<>();
+            for (Layer l : this.planPostLayers) {
+                copy.planPostLayers.add(deepCopyLayer(l));
+            }
+        }
+
+        // Copy execution layers
+        copy.executionLayers = new ArrayList<>();
+        for (Layer l : this.executionLayers) {
+            copy.executionLayers.add(deepCopyLayer(l));
+        }
+
+        // Copy output layer
+        copy.outputLayer = deepCopyLayer(this.outputLayer);
+
+        return copy;
+    }
+
+    private static Layer deepCopyLayer(Layer original) {
+        Layer copy = new Layer();
+        List<Neuron> copiedNeurons = new ArrayList<>();
+        for (Neuron n : original.getNeurons()) {
+            Neuron cn = new Neuron();
+            cn.setWeights(new ArrayList<>(n.getWeights()));
+            cn.setBias(n.getBias());
+            copiedNeurons.add(cn);
+        }
+        copy.setNeurons(copiedNeurons);
+        return copy;
     }
 
     // --- Getters for Visualization ---

@@ -113,8 +113,8 @@ public class GameController {
     }
 
     @PostMapping("/game/cpu-step")
-    public String cpuStep() {
-        gameService.processCpuStep();
+    public String cpuStep(@RequestParam(defaultValue = "2000") int delayMs) {
+        gameService.processCpuStep(delayMs);
         return "redirect:/game";
     }
 

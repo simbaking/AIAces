@@ -3,7 +3,7 @@
 
 <head>
     <title>Ace's Game</title>
-    <link rel="stylesheet" th:href="@{/css/style.css?v=4}" />
+    <link rel="stylesheet" th:href="@{/css/style.css?v=5}" />
 </head>
 
 <body>
@@ -36,10 +36,41 @@
                     class="skip-btn">Skip / Pass</button>
             </form>
 
-            <form id="restartForm" th:action="@{/game/restart}" method="post" style="margin-left:auto;">
+            <!-- Game Speed Slider -->
+            <div
+                style="display:flex; align-items:center; gap:8px; margin-left:auto; background:rgba(0,0,0,0.3); padding:6px 12px; border-radius:8px;">
+                <label for="gameSpeedSlider" style="font-size:0.75rem; color:#94a3b8; white-space:nowrap;">⏱️
+                    Speed:</label>
+                <input id="gameSpeedSlider" type="range" min="0" max="5" step="0.5" value="2"
+                    style="width:80px; cursor:pointer; accent-color:#22c55e;" oninput="updateGameSpeed(this.value)">
+                <span id="gameSpeedValue"
+                    style="font-size:0.75rem; color:#fff; font-weight:bold; min-width:30px;">2.0s</span>
+            </div>
+
+            <form id="restartForm" th:action="@{/game/restart}" method="post" style="margin-left:8px;">
                 <button type="button" class="danger-btn" onclick="showRestartModal()">Restart</button>
             </form>
         </header>
+
+        <script>
+            // Game Speed persistence
+            function updateGameSpeed(val) {
+                localStorage.setItem('gameSpeed', val);
+                document.getElementById('gameSpeedValue').textContent = parseFloat(val).toFixed(1) + 's';
+            }
+            (function () {
+                var saved = localStorage.getItem('gameSpeed');
+                if (saved !== null) {
+                    var slider = document.getElementById('gameSpeedSlider');
+                    slider.value = saved;
+                    document.getElementById('gameSpeedValue').textContent = parseFloat(saved).toFixed(1) + 's';
+                }
+            })();
+            function getGameSpeedMs() {
+                var val = localStorage.getItem('gameSpeed');
+                return Math.round((val !== null ? parseFloat(val) : 2.0) * 1000);
+            }
+        </script>
 
         <!-- Restart Confirmation Modal -->
         <div id="restartModal" class="modal-overlay" style="display:none;">
@@ -67,11 +98,11 @@
             <div id="poker-table">
                 <!-- Center Deck -->
                 <div class="center-deck" style="position:relative;">
-                    <!-- Bottom Facing Card (Under deck) -->
-                    <div th:if="${state.bottomFacingCard != null}" class="bottom-card"
-                        title="Bottom Card - Determins 7 Validity"
+                    <!-- Card Under Deck (determines which 7s are active) -->
+                    <div th:if="${state.cardUnderDeck != null}" class="bottom-card"
+                        title="Card Under Deck - Determines 7 Validity"
                         style="position:absolute; top:0px; left:50px; z-index:0; opacity:0.9; transform: rotate(90deg);">
-                        <img th:src="${state.bottomFacingCard.imagePath}" class="card-img"
+                        <img th:src="${state.cardUnderDeck.imagePath}" class="card-img"
                             style="width:80px; height:112px; border-radius:6px; box-shadow:0 2px 5px rgba(0,0,0,0.3);" />
                     </div>
 
@@ -145,9 +176,9 @@
                     <th:block th:unless="${p.id == human.id}">
                         <div class="cpu-hand" th:style="'--hand-size:' + ${p.hand.size()}">
                             <!-- Fan the cards with rotation -->
-                            <div th:each="i : ${#numbers.sequence(0, p.hand.size() > 0 ? p.hand.size() - 1 : 0)}"
-                                th:if="${p.hand.size() > 0}" class="cpu-card-back"
-                                th:style="'--fan-i:' + ${i} + '; --fan-total:' + ${p.hand.size()}">
+                            <div th:each="card, stat : ${p.hand}" th:if="${p.hand.size() > 0}" class="cpu-card-back"
+                                th:classappend="${state.cpuLastDrawnCard != null and stat.last} ? ' cpu-card-new' : ''"
+                                th:style="'--fan-i:' + ${stat.index} + '; --fan-total:' + ${p.hand.size()}">
                             </div>
                         </div>
                     </th:block>
@@ -522,15 +553,22 @@
                 animateCpuAction(lastAction);
             }
 
-            if (cpuTurnPending && !isHumanTurn && !isGameOver && !isModalActive) {
-                // Auto-submit CPU step after delay (with animation time)
+            if (cpuTurnPending && !isHumanTurn && !isGameOver) {
+                // Auto-submit CPU step after slider-controlled delay
+                // Note: isModalActive is ignored here because CPU resolves effects server-side
+                var speedMs = getGameSpeedMs();
                 setTimeout(function () {
                     var form = document.createElement('form');
                     form.method = 'POST';
                     form.action = '/game/cpu-step';
+                    var input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'delayMs';
+                    input.value = getGameSpeedMs();
+                    form.appendChild(input);
                     document.body.appendChild(form);
                     form.submit();
-                }, 6000);
+                }, speedMs);
             }
         })();
 
@@ -723,13 +761,62 @@
     </div>
 
     <!-- Toggle Button -->
-    <button onclick="toggleAiDebug()"
-        style="position:fixed; bottom:20px; left:20px; z-index:1000; background:#0f172a; color:#22c55e; border:1px solid #22c55e; padding:8px 15px; font-family:monospace; cursor:pointer; border-radius:4px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
-        DEV: BRAIN VIEW 🧠
-    </button>
+    <div style="position:fixed; bottom:20px; left:20px; z-index:1000; display:flex; flex-direction:column; gap:10px;">
+        <button onclick="toggleAiDebug()"
+            style="background:#0f172a; color:#22c55e; border:1px solid #22c55e; padding:8px 15px; font-family:monospace; cursor:pointer; border-radius:4px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5);">
+            DEV: BRAIN VIEW 🧠
+        </button>
+
+        <!-- Background Training Indicator inside Game -->
+        <div id="gameTrainingIndicator"
+            style="display:none; background:rgba(0,0,0,0.8); padding:8px 15px; border-radius:4px; border:1px solid #a855f7; color:#e2e8f0; font-family:monospace; font-weight:bold; align-items:center; gap:8px; box-shadow:0 4px 10px rgba(168,85,247,0.3);">
+            <span style="animation: pulse 1.5s infinite;">🧠</span>
+            <span style="font-size:0.8rem;">TRAINING (<span id="gameGamesPlayed">0</span>)</span>
+        </div>
+    </div>
+
+    <style>
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: scale(1.2);
+                opacity: 0.7;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+    </style>
 
     <script th:inline="javascript">
         /*<![CDATA[*/
+        function checkGameTrainingStatus() {
+            fetch('/ai/training-status')
+                .then(response => response.json())
+                .then(data => {
+                    const indicator = document.getElementById('gameTrainingIndicator');
+                    const gamesCount = document.getElementById('gameGamesPlayed');
+
+                    if (data.isRunning) {
+                        indicator.style.display = 'flex';
+                        gamesCount.textContent = data.gamesPlayed;
+                    } else {
+                        indicator.style.display = 'none';
+                    }
+                })
+                .catch(err => console.error('Error fetching training status:', err));
+        }
+
+        // Start checking 
+        checkGameTrainingStatus();
+        setInterval(checkGameTrainingStatus, 2000);
+
         var canvas = document.getElementById('brainCanvas');
         var ctx = canvas.getContext('2d');
 
@@ -743,8 +830,10 @@
             var overlay = document.getElementById('aiOverlay');
             if (overlay.style.display === 'none') {
                 overlay.style.display = 'flex';
-                resizeCanvas();
-                fetchAiState();
+                setTimeout(() => {
+                    resizeCanvas();
+                    fetchAiState();
+                }, 50);
             } else {
                 overlay.style.display = 'none';
             }
@@ -866,8 +955,12 @@
             var h = canvas.height;
             var pad = 140;
 
-            var stratCount = brain.strategyLayers.length;
-            var execCount = brain.executionLayers.length;
+            // Filter strategy and execution layers to combine every other layer
+            var visStratLayers = brain.strategyLayers.filter((l, i) => i % 2 === 0);
+            var visExecLayers = brain.executionLayers.filter((l, i) => i % 2 === 0);
+
+            var stratCount = visStratLayers.length;
+            var execCount = visExecLayers.length;
 
             // Stages: Inputs(0) -> Strat(1..N) -> Bot -> Exec(1..M) -> Out
             var totalStages = 1 + stratCount + 1 + execCount + 1;
@@ -891,8 +984,16 @@
             // Strategy Layers
             var currentStage = 1;
 
-            brain.strategyLayers.forEach(l => {
-                stages.push(calculateNodes(getX(currentStage++), new Array(l.neurons.length).fill(0), false));
+            visStratLayers.forEach((l, layerIdx) => {
+                var keptIndices = [];
+                // Only keep every fourth node
+                l.neurons.forEach((n, i) => { if (i % 4 === 0) keptIndices.push(i); });
+                var visualNodes = calculateNodes(getX(currentStage++), new Array(keptIndices.length).fill(0), false);
+                var sparseNodes = new Array(l.neurons.length).fill(null);
+                keptIndices.forEach((origIdx, vIdx) => {
+                    sparseNodes[origIdx] = visualNodes[vIdx];
+                });
+                stages.push(sparseNodes);
             });
 
             // Bottleneck (3 nodes) - spread out vertically more
@@ -942,26 +1043,34 @@
             brainNodes.push(hoardNode);
 
             // Exec Layers
-            brain.executionLayers.forEach(l => {
-                stages.push(calculateNodes(getX(currentStage++), new Array(l.neurons.length).fill(0), false));
+            visExecLayers.forEach(l => {
+                var keptIndices = [];
+                // Only keep every fourth node
+                l.neurons.forEach((n, i) => { if (i % 4 === 0) keptIndices.push(i); });
+                var visualNodes = calculateNodes(getX(currentStage++), new Array(keptIndices.length).fill(0), false);
+                var sparseNodes = new Array(l.neurons.length).fill(null);
+                keptIndices.forEach((origIdx, vIdx) => {
+                    sparseNodes[origIdx] = visualNodes[vIdx];
+                });
+                stages.push(sparseNodes);
             });
 
             // Output (5 Nodes)
-            var outNodes = calculateNodes(getX(currentStage++), data.outputs, true);
+            var outNodes = calculateNodes(getX(currentStage++), data.outputs ? data.outputs.slice(0, 5) : [], true);
             outNodes.forEach((n, i) => { n.descIndex = 11 + i; });
             brainNodes = brainNodes.concat(outNodes);
             stages.push(outNodes);
 
             // --- CONNECTIONS ---
             // 1. Inputs -> Strat 0
-            var s0Filter = activeStrategy !== 'ALL' ? createFilter(brain.strategyLayers[0].neurons.length, activeStrategy) : null;
-            drawAggregatedLayerWeights(brain.strategyLayers[0], stages[0], stages[1], s0Filter);
+            var s0Filter = activeStrategy !== 'ALL' ? createFilter(visStratLayers[0].neurons.length, activeStrategy) : null;
+            drawAggregatedLayerWeights(visStratLayers[0], stages[0], stages[1], s0Filter);
 
             // 2. Strat -> Strat
             var sIdx = 1;
             for (var i = 1; i < stratCount; i++) {
-                var flt = activeStrategy !== 'ALL' ? createFilter(brain.strategyLayers[i].neurons.length, activeStrategy) : null;
-                drawLayerWeights(brain.strategyLayers[i], stages[sIdx], stages[sIdx + 1], flt, true);
+                var flt = activeStrategy !== 'ALL' ? createFilter(visStratLayers[i].neurons.length, activeStrategy) : null;
+                drawLayerWeights(visStratLayers[i], stages[sIdx], stages[sIdx + 1], flt, true);
                 sIdx++;
             }
 
@@ -986,7 +1095,7 @@
             sIdx++;
 
             // 4. Bottleneck + Inputs -> Exec 0
-            var execL0 = brain.executionLayers[0];
+            var execL0 = visExecLayers[0];
             var targetPos = stages[sIdx + 1];
             var bottleneckPos = stages[sIdx];
             var inputsPos = stages[0];
@@ -1000,7 +1109,7 @@
 
             // 5. Exec -> Exec
             for (var i = 1; i < execCount; i++) {
-                drawLayerWeights(brain.executionLayers[i], stages[sIdx], stages[sIdx + 1]);
+                drawLayerWeights(visExecLayers[i], stages[sIdx], stages[sIdx + 1]);
                 sIdx++;
             }
 
@@ -1010,7 +1119,9 @@
             // --- DRAW NODES ---
             stages.forEach((nodes, stgIdx) => {
                 nodes.forEach((n, nIdx) => {
-                    drawNodeCircle(n, stgIdx, stages.length);
+                    if (n) {
+                        drawNodeCircle(n, stgIdx, stages.length);
+                    }
                 });
             });
             // Draw Aggro input nodes
@@ -1069,60 +1180,70 @@
             ctx.fillText("Hand", hoardNode.x - 10, hoardNode.y + 4);
 
             // === PLAN PROCESSING NETWORKS ===
-            // Draw planPreLayers (left of Plan node) and planPostLayers (right of Plan node)
+            // Show planPre and planPost as compact multi-node sub-networks
+            // Connection flow: Processing → PrePlan → Plan → PostPlan → Tactics
             if (brain.planPreLayers && brain.planPreLayers.length > 0) {
                 var planNode = bnNodes[2]; // Plan is index 2
                 var planPreNodes = [];
                 var planPostNodes = [];
 
-                // Position: Below Plan node, spread horizontally
-                var planNetY = planNode.y + 60; // Below Plan
-                var planLayerSpacing = 40; // Horizontal spacing between layers
-                var planNodeSpacing = 15; // Vertical spacing between nodes in a layer
+                // Position: Below the Plan node, compact layout
+                var planNetY = planNode.y + 120;
+                var planLayerSpacing = 45;
+                var planNodeSpacing = 16;
+                var numNodesPerLayer = brain.planPreLayers[0].neurons.length;
+                var halfNodes = (numNodesPerLayer - 1) / 2;
 
-                // Pre-network (3 layers, 5 nodes each) - LEFT of Plan
-                var preStartX = planNode.x - 80;
+                // Pre-network - LEFT of Plan, layers flow right toward Plan
+                var preEndX = planNode.x - 40;
                 for (var layerIdx = 0; layerIdx < brain.planPreLayers.length; layerIdx++) {
                     var layer = brain.planPreLayers[layerIdx];
-                    var layerX = preStartX - (2 - layerIdx) * planLayerSpacing; // Right to left
+                    var layerX = preEndX - (brain.planPreLayers.length - 1 - layerIdx) * planLayerSpacing;
                     for (var nodeIdx = 0; nodeIdx < layer.neurons.length; nodeIdx++) {
-                        var nodeY = planNetY + (nodeIdx - 2) * planNodeSpacing;
+                        var nodeY = planNetY + (nodeIdx - halfNodes) * planNodeSpacing;
                         planPreNodes.push({
-                            x: layerX,
-                            y: nodeY,
-                            layerIdx: layerIdx,
-                            nodeIdx: nodeIdx,
-                            color: '#a855f7' // Purple for Plan networks
+                            x: layerX, y: nodeY,
+                            layerIdx: layerIdx, nodeIdx: nodeIdx,
+                            color: '#a855f7'
                         });
                     }
                 }
 
-                // Post-network (3 layers, 5 nodes each) - RIGHT of Plan
-                var postStartX = planNode.x + 80;
+                // Post-network - RIGHT of Plan, layers flow right toward Tactics
+                var postStartX = planNode.x + 40;
                 for (var layerIdx = 0; layerIdx < brain.planPostLayers.length; layerIdx++) {
                     var layer = brain.planPostLayers[layerIdx];
-                    var layerX = postStartX + layerIdx * planLayerSpacing; // Left to right
+                    var layerX = postStartX + layerIdx * planLayerSpacing;
                     for (var nodeIdx = 0; nodeIdx < layer.neurons.length; nodeIdx++) {
-                        var nodeY = planNetY + (nodeIdx - 2) * planNodeSpacing;
+                        var nodeY = planNetY + (nodeIdx - halfNodes) * planNodeSpacing;
                         planPostNodes.push({
-                            x: layerX,
-                            y: nodeY,
-                            layerIdx: layerIdx,
-                            nodeIdx: nodeIdx,
-                            color: '#a855f7' // Purple for Plan networks
+                            x: layerX, y: nodeY,
+                            layerIdx: layerIdx, nodeIdx: nodeIdx,
+                            color: '#a855f7'
                         });
                     }
                 }
 
-                // Draw connections within pre-network (only if Plan filter active or ALL)
+                // Draw connections (only when Plan filter or ALL)
                 if (activeStrategy === 'ALL' || activeStrategy === 2) {
-                    // Pre layers connections
+                    // 1. Processing (last strategy layer) → PrePlan layer 0
+                    var lastStratStage = stages[stratCount];
+                    if (lastStratStage) {
+                        for (var ni = 0; ni < numNodesPerLayer; ni++) {
+                            var preNode = planPreNodes[ni]; // Layer 0 nodes
+                            for (var si = 0; si < Math.min(6, lastStratStage.length); si++) {
+                                var w = brain.planPreLayers[0].neurons[ni].weights[si] || 0;
+                                drawSingleLine(lastStratStage[si], preNode, w, '#a855f7');
+                            }
+                        }
+                    }
+
+                    // 2. PrePlan internal layer connections
                     for (var i = 0; i < planPreNodes.length; i++) {
                         var node = planPreNodes[i];
                         if (node.layerIdx > 0) {
-                            // Connect to previous layer
-                            var prevLayerStart = (node.layerIdx - 1) * 5;
-                            for (var j = 0; j < 5; j++) {
+                            var prevLayerStart = (node.layerIdx - 1) * numNodesPerLayer;
+                            for (var j = 0; j < numNodesPerLayer; j++) {
                                 var prevNode = planPreNodes[prevLayerStart + j];
                                 var w = brain.planPreLayers[node.layerIdx].neurons[node.nodeIdx].weights[j] || 0;
                                 drawSingleLine(prevNode, node, w, '#a855f7');
@@ -1130,25 +1251,23 @@
                         }
                     }
 
-                    // Connect last pre layer to Plan node
-                    var lastPreLayerStart = 2 * 5; // Layer 2
-                    for (var j = 0; j < 5; j++) {
-                        var preNode = planPreNodes[lastPreLayerStart + j];
-                        drawSingleLine(preNode, planNode, 0.5, '#a855f7');
+                    // 3. Last PrePlan layer → Plan node
+                    var lastPreStart = (brain.planPreLayers.length - 1) * numNodesPerLayer;
+                    for (var j = 0; j < numNodesPerLayer; j++) {
+                        drawSingleLine(planPreNodes[lastPreStart + j], planNode, 0.5, '#a855f7');
                     }
 
-                    // Connect Plan node to first post layer
-                    for (var j = 0; j < 5; j++) {
-                        var postNode = planPostNodes[j]; // First layer
-                        drawSingleLine(planNode, postNode, 0.5, '#a855f7');
+                    // 4. Plan node → first PostPlan layer
+                    for (var j = 0; j < numNodesPerLayer; j++) {
+                        drawSingleLine(planNode, planPostNodes[j], 0.5, '#a855f7');
                     }
 
-                    // Post layers connections
+                    // 5. PostPlan internal layer connections
                     for (var i = 0; i < planPostNodes.length; i++) {
                         var node = planPostNodes[i];
                         if (node.layerIdx > 0) {
-                            var prevLayerStart = (node.layerIdx - 1) * 5;
-                            for (var j = 0; j < 5; j++) {
+                            var prevLayerStart = (node.layerIdx - 1) * numNodesPerLayer;
+                            for (var j = 0; j < numNodesPerLayer; j++) {
                                 var prevNode = planPostNodes[prevLayerStart + j];
                                 var w = brain.planPostLayers[node.layerIdx].neurons[node.nodeIdx].weights[j] || 0;
                                 drawSingleLine(prevNode, node, w, '#a855f7');
@@ -1156,22 +1275,20 @@
                         }
                     }
 
-                    // Connect last post layer to execution (visual only)
-                    var lastPostLayerStart = 2 * 5;
-                    var execFirstStage = stages[stratCount + 2]; // After bottleneck
+                    // 6. Last PostPlan layer → Tactics (first execution stage)
+                    var lastPostStart = (brain.planPostLayers.length - 1) * numNodesPerLayer;
+                    var execFirstStage = stages[stratCount + 2];
                     if (execFirstStage) {
-                        for (var j = 0; j < 5; j++) {
-                            var postNode = planPostNodes[lastPostLayerStart + j];
-                            // Connect to a few exec nodes
-                            for (var e = 0; e < Math.min(3, execFirstStage.length); e++) {
-                                drawSingleLine(postNode, execFirstStage[e], 0.3, '#a855f7');
+                        for (var j = 0; j < numNodesPerLayer; j++) {
+                            for (var e = 0; e < Math.min(4, execFirstStage.length); e++) {
+                                drawSingleLine(planPostNodes[lastPostStart + j], execFirstStage[e], 0.3, '#a855f7');
                             }
                         }
                     }
                 }
 
-                // Draw pre-network nodes
-                planPreNodes.forEach(n => {
+                // Draw nodes
+                planPreNodes.forEach(function(n) {
                     ctx.beginPath();
                     ctx.arc(n.x, n.y, 3, 0, 2 * Math.PI);
                     ctx.fillStyle = n.color;
@@ -1180,9 +1297,7 @@
                     ctx.lineWidth = 0.5;
                     ctx.stroke();
                 });
-
-                // Draw post-network nodes
-                planPostNodes.forEach(n => {
+                planPostNodes.forEach(function(n) {
                     ctx.beginPath();
                     ctx.arc(n.x, n.y, 3, 0, 2 * Math.PI);
                     ctx.fillStyle = n.color;
@@ -1194,10 +1309,10 @@
 
                 // Labels
                 ctx.fillStyle = '#a855f7';
-                ctx.textAlign = "center";
+                ctx.textAlign = 'center';
                 ctx.font = 'bold 9px Arial';
-                ctx.fillText("Pre", preStartX - planLayerSpacing, planNetY - 30);
-                ctx.fillText("Post", postStartX + planLayerSpacing, planNetY - 30);
+                ctx.fillText('PrePlan', preEndX - (brain.planPreLayers.length - 1) * planLayerSpacing / 2, planNetY - halfNodes * planNodeSpacing - 12);
+                ctx.fillText('PostPlan', postStartX + (brain.planPostLayers.length - 1) * planLayerSpacing / 2, planNetY - halfNodes * planNodeSpacing - 12);
             }
 
         }
@@ -1212,8 +1327,8 @@
             var nodes = [];
             var count = values.length;
             var canvasH = canvas.height;
-            var margin = 60; // Top/bottom margin
-            var availableH = canvasH - 2 * margin;
+            var margin = 40; // Top margin
+            var availableH = canvasH * 0.55; // Use top 55% for main network, leave room for plan nets below
 
             // Calculate gap: fit all nodes within available height
             var gap = spacing || Math.min(25, availableH / Math.max(count, 1));
@@ -1229,6 +1344,7 @@
 
         function drawLayerWeights(layer, sourceNodes, targetNodes, targetFilter = null, colorizeSources = false) {
             targetNodes.forEach((tNode, tIdx) => {
+                if (!tNode) return;
                 // If filtering targets, skip if not in list
                 if (targetFilter && !targetFilter.includes(tIdx)) return;
 
@@ -1246,13 +1362,16 @@
 
         function drawAggregatedLayerWeights(layer, sourceNodes, targetNodes, targetFilter = null) {
             targetNodes.forEach((tNode, tIdx) => {
+                if (!tNode) return;
                 if (targetFilter && !targetFilter.includes(tIdx)) return;
                 var neuron = layer.neurons[tIdx];
                 if (!neuron) return;
-                // 38 weights -> 8 source nodes
+                // weights -> mapped to 8 visual source nodes
                 neuron.weights.forEach((w, wIdx) => {
                     var vIdx = INPUT_MAPPING[wIdx];
+                    if (vIdx === undefined) return;
                     var sNode = sourceNodes[vIdx];
+                    if (!sNode) return;
                     var color = INPUT_COLORS[vIdx];
                     drawSingleLine(sNode, tNode, w, color);
                 });
@@ -1261,6 +1380,7 @@
 
         function drawComplexWeights(layer, targetNodes, segments) {
             targetNodes.forEach((tNode, tIdx) => {
+                if (!tNode) return;
                 var neuron = layer.neurons[tIdx];
                 if (!neuron) return;
 
@@ -1276,7 +1396,9 @@
 
                         if (seg.isAggregated) {
                             var vIdx = INPUT_MAPPING[i];
+                            if (vIdx === undefined) continue;
                             var sNode = seg.sourceNodes[vIdx];
+                            if (!sNode) continue;
                             var color = INPUT_COLORS[vIdx];
                             drawSingleLine(sNode, tNode, w, color);
                         } else {
@@ -1290,26 +1412,27 @@
         }
 
         function drawSingleLine(sNode, tNode, weight, specificColor) {
+            if (!sNode || !tNode) return;
             var val = Math.abs(weight);
             // Exponential scaling using global weightExponent
             var strength = Math.pow(val, weightExponent);
 
             // Higher threshold for cleaner visualization - skip weak connections
-            if (strength < 0.15) return;
+            if (strength < 0.2) return;
 
             ctx.beginPath();
             ctx.moveTo(sNode.x, sNode.y);
             ctx.lineTo(tNode.x, tNode.y);
 
-            // Width: 0.1 to 1.0 (Very thin)
-            ctx.lineWidth = 0.1 + Math.min(1.0, strength * 1.5);
+            // Width: ultra-thin lines to reduce clutter
+            ctx.lineWidth = 0.02 + Math.min(0.18, strength * 0.2);
 
             if (specificColor) {
                 ctx.strokeStyle = specificColor;
-                ctx.globalAlpha = Math.min(0.7, strength * 0.6 + 0.1);
+                ctx.globalAlpha = Math.min(1.0, strength * 1.5 + 0.5);
             } else {
                 ctx.strokeStyle = weight > 0 ? '#60a5fa' : '#f87171';
-                ctx.globalAlpha = Math.min(0.5, strength * 0.5);
+                ctx.globalAlpha = Math.min(1.0, strength * 1.5 + 0.4);
             }
             ctx.stroke();
             ctx.globalAlpha = 1;
@@ -1355,23 +1478,7 @@
 
 
         // ====== CPU TURN AUTO-TRIGGER ======
-        // Check if it's a CPU's turn and automatically process it
-        (function () {
-            var isHumanTurn = /*[[${state.currentPlayer.pc}]]*/ true;
-            var isGameOver = /*[[${state.gameOver}]]*/ false;
-
-            if (!isHumanTurn && !isGameOver) {
-                // It's a CPU's turn! Trigger the CPU step after a short delay
-                setTimeout(function () {
-                    // POST to /game/cpu-step
-                    var form = document.createElement('form');
-                    form.method = 'POST';
-                    form.action = '/game/cpu-step';
-                    document.body.appendChild(form);
-                    form.submit();
-                }, 500); // Small delay for visual feedback
-            }
-        })();
+        // (Handled by the primary CPU AUTO-STEP trigger above)
 
         canvas.addEventListener('click', function (e) {
             var rect = canvas.getBoundingClientRect();

@@ -3,6 +3,7 @@ package com.aces.game.ai;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
 
 public class GlobalAi {
 
@@ -38,25 +39,32 @@ public class GlobalAi {
                     bnSize = INSTANCE.getStrategyBottleneck().getNeurons().get(0).getWeights().size();
                 }
 
-                // Verify Plan Pre-Layers exist (3 layers, 5 neurons each)
-                boolean hasPlanLayers = INSTANCE.getPlanPreLayers() != null 
-                    && INSTANCE.getPlanPreLayers().size() == 3
-                    && INSTANCE.getPlanPreLayers().get(0).getNeurons().size() == 5;
+                // Verify Plan Pre-Layers exist (5 layers, 10 neurons each, first layer takes 64 strategy outputs)
+                boolean hasPlanPreLayers = INSTANCE.getPlanPreLayers() != null 
+                    && INSTANCE.getPlanPreLayers().size() == 5
+                    && INSTANCE.getPlanPreLayers().get(0).getNeurons().size() == 10
+                    && INSTANCE.getPlanPreLayers().get(0).getNeurons().get(0).getWeights().size() == 64;
 
-                // Expected execution input size: 3 (strategy) + 5 (planPost) + 42 (inputs) = 50
-                if (checkSize != 38 || execSize != 50 || outputSize != 5 || bnSize != 36 || !hasPlanLayers) {
+                // Verify Plan Post-Layers exist (5 layers, 10 neurons each, first layer takes 10 planPre outputs)
+                boolean hasPlanPostLayers = INSTANCE.getPlanPostLayers() != null 
+                    && INSTANCE.getPlanPostLayers().size() == 5
+                    && INSTANCE.getPlanPostLayers().get(0).getNeurons().size() == 10
+                    && INSTANCE.getPlanPostLayers().get(0).getNeurons().get(0).getWeights().size() == 10;
+
+                // Expected execution input size: 3 (strategy) + 10 (planPost) + 96 (inputs) = 109
+                if (checkSize != 38 || execSize != 109 || outputSize != 58 || bnSize != 68 || !hasPlanPreLayers || !hasPlanPostLayers) {
                     System.out.println("GlobalAi: Mismatched brain topology (In=" + checkSize + ", ExecIn=" + execSize
-                            + ", Out=" + outputSize + ", Bn=" + bnSize + ", PlanLayers=" + hasPlanLayers + "). Resetting to new architecture with Plan networks.");
-                    INSTANCE = new NeuralNetwork(42, 5);
+                            + ", Out=" + outputSize + ", Bn=" + bnSize + ", PlanPre=" + hasPlanPreLayers + ", PlanPost=" + hasPlanPostLayers + "). Resetting to new architecture.");
+                    INSTANCE = new NeuralNetwork(96, 58);
                 }
             } else {
                 System.out.println("GlobalAi: Creating new brain.");
-                INSTANCE = new NeuralNetwork(42, 5);
+                INSTANCE = new NeuralNetwork(96, 58);
             }
         } catch (Exception e) {
             System.err.println("GlobalAi: Failed to load brain. Starting fresh. Error: " + e.getMessage());
             e.printStackTrace();
-            INSTANCE = new NeuralNetwork(42, 5);
+            INSTANCE = new NeuralNetwork(96, 58);
         }
     }
 
@@ -64,7 +72,27 @@ public class GlobalAi {
         return INSTANCE;
     }
 
-    public static void save() {
+    /** Thread-safe feedForward */
+    public static synchronized List<Double> feedForwardSafe(List<Double> inputs) {
+        return INSTANCE.feedForward(inputs);
+    }
+
+    /** Thread-safe train */
+    public static synchronized void trainSafe(List<Double> inputs, int actionIndex, double reward) {
+        INSTANCE.train(inputs, actionIndex, reward, 1.0);
+    }
+
+    /** Thread-safe train with multiplier */
+    public static synchronized void trainSafe(List<Double> inputs, int actionIndex, double reward, double weightMultiplier) {
+        INSTANCE.train(inputs, actionIndex, reward, weightMultiplier);
+    }
+
+    /** Thread-safe mutate */
+    public static synchronized void mutateSafe(double rate, double strength) {
+        INSTANCE.mutate(rate, strength);
+    }
+
+    public static synchronized void save() {
         try {
             mapper.writeValue(new File(FILE_PATH), INSTANCE);
             System.out.println("GlobalAi: Brain saved to " + FILE_PATH);

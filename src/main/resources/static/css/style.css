@@ -214,9 +214,9 @@ header {
 
     /* Fan Logic - spread cards out with rotation */
     /* Calculate position based on card index and total cards */
-    --spread: 50px;
-    --rotate-amount: 6deg;
-    --lift-amount: 8px;
+    --spread: min(50px, calc(800px / max(var(--total, 1), 1)));
+    --rotate-amount: min(6deg, calc(70deg / max(var(--total, 1), 1)));
+    --lift-amount: min(8px, calc(100px / max(var(--total, 1), 1)));
     --center-offset: calc((var(--total, 1) - 1) / 2);
     --relative-index: calc(var(--i, 0) - var(--center-offset));
 
@@ -282,8 +282,8 @@ button {
 }
 
 .cpu-card-back {
-    --fan-spread: 8deg;
-    /* Angle between cards */
+    /* Angle between cards, scales down for large hands */
+    --fan-spread: min(8deg, calc(120deg / max(var(--fan-total, 1), 1)));
     --fan-offset: calc((var(--fan-total, 1) - 1) / 2);
     /* Center the fan */
 
@@ -300,6 +300,26 @@ button {
     transform: translateX(-50%) rotate(calc((var(--fan-i, 0) - var(--fan-offset)) * var(--fan-spread)));
     z-index: var(--fan-i, 0);
     box-shadow: 1px 1px 5px rgba(0, 0, 0, 0.4);
+}
+
+/* Highlight for newly drawn CPU card (still face-down) */
+.cpu-card-new {
+    border: 2px solid #ffd700 !important;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.8), 0 0 25px rgba(255, 215, 0, 0.4) !important;
+    animation: drawnCardPulse 1s ease-in-out infinite;
+    z-index: 100 !important;
+}
+
+@keyframes drawnCardPulse {
+
+    0%,
+    100% {
+        box-shadow: 0 0 12px rgba(255, 215, 0, 0.8), 0 0 25px rgba(255, 215, 0, 0.4);
+    }
+
+    50% {
+        box-shadow: 0 0 20px rgba(255, 215, 0, 1), 0 0 40px rgba(255, 215, 0, 0.6);
+    }
 }
 
 /* Modal styling */
