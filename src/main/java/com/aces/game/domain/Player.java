@@ -1,11 +1,9 @@
 package com.aces.game.domain;
 
-import lombok.Data;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Stack; // Added import for Stack
 
-@Data
 public class Player {
     private String id;
     private String name;
@@ -30,6 +28,62 @@ public class Player {
         this.discardPile = new ArrayList<>();
     }
 
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public boolean isPc() {
+        return isPc;
+    }
+
+    public void setPc(boolean pc) {
+        isPc = pc;
+    }
+
+    public List<Card> getHand() {
+        return hand;
+    }
+
+    public void setHand(List<Card> hand) {
+        this.hand = hand;
+    }
+
+    public Stack<Card> getStack() {
+        return stack;
+    }
+
+    public void setStack(Stack<Card> stack) {
+        this.stack = stack;
+    }
+
+    public List<Card> getDiscardPile() {
+        return discardPile;
+    }
+
+    public void setDiscardPile(List<Card> discardPile) {
+        this.discardPile = discardPile;
+    }
+
+    public Card.Rank getJokerStackValue() {
+        return jokerStackValue;
+    }
+
+    public void setJokerStackValue(Card.Rank jokerStackValue) {
+        this.jokerStackValue = jokerStackValue;
+    }
+
     public Card getLastDiscard() {
         if (discardPile.isEmpty())
             return null;
@@ -40,5 +94,23 @@ public class Player {
         if (stack.isEmpty())
             return null;
         return stack.get(stack.size() - 1);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        Player player = (Player) o;
+        return id != null ? id.equals(player.id) : player.id == null;
+    }
+
+    @Override
+    public int hashCode() {
+        return id != null ? id.hashCode() : 0;
+    }
+
+    @Override
+    public String toString() {
+        return "Player(" + "id=" + id + ", name=" + name + ", isPc=" + isPc + ')';
     }
 }

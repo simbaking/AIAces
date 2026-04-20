@@ -1,12 +1,10 @@
 package com.aces.game.domain;
 
-import lombok.Data;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Stack;
 
-@Data
 public class GameState {
     private List<Player> players = new ArrayList<>();
     private java.util.Stack<Card> drawPile = new java.util.Stack<>();
@@ -77,20 +75,214 @@ public class GameState {
     private int jokerPickCount = 0;
     private boolean jokerModeToStack = true; // true = 2 cards to stack, false = 1 card to hand
 
-    public boolean isJokerModeToStack() {
-        return jokerModeToStack;
+    // ===== Getters and Setters =====
+
+    public List<Player> getPlayers() {
+        return players;
     }
 
-    public void setJokerModeToStack(boolean jokerModeToStack) {
-        this.jokerModeToStack = jokerModeToStack;
+    public void setPlayers(List<Player> players) {
+        this.players = players;
     }
 
-    public int getJokerPickCount() {
-        return jokerPickCount;
+    public Stack<Card> getDrawPile() {
+        return drawPile;
     }
 
-    public void setJokerPickCount(int jokerPickCount) {
-        this.jokerPickCount = jokerPickCount;
+    public void setDrawPile(Stack<Card> drawPile) {
+        this.drawPile = drawPile;
+    }
+
+    public Stack<Card> getDiscardPile() {
+        return discardPile;
+    }
+
+    public void setDiscardPile(Stack<Card> discardPile) {
+        this.discardPile = discardPile;
+    }
+
+    public int getCurrentPlayerIndex() {
+        return currentPlayerIndex;
+    }
+
+    public void setCurrentPlayerIndex(int currentPlayerIndex) {
+        this.currentPlayerIndex = currentPlayerIndex;
+    }
+
+    public String getGameMessage() {
+        return gameMessage;
+    }
+
+    public void setGameMessage(String gameMessage) {
+        this.gameMessage = gameMessage;
+    }
+
+    public boolean isGameOver() {
+        return gameOver;
+    }
+
+    public void setGameOver(boolean gameOver) {
+        this.gameOver = gameOver;
+    }
+
+    public Player getWinner() {
+        return winner;
+    }
+
+    public void setWinner(Player winner) {
+        this.winner = winner;
+    }
+
+    public int getInitialCpuCount() {
+        return initialCpuCount;
+    }
+
+    public void setInitialCpuCount(int initialCpuCount) {
+        this.initialCpuCount = initialCpuCount;
+    }
+
+    public String getInitialPlayerName() {
+        return initialPlayerName;
+    }
+
+    public void setInitialPlayerName(String initialPlayerName) {
+        this.initialPlayerName = initialPlayerName;
+    }
+
+    public Phase getPhase() {
+        return phase;
+    }
+
+    public void setPhase(Phase phase) {
+        this.phase = phase;
+    }
+
+    public EffectState getEffectState() {
+        return effectState;
+    }
+
+    public void setEffectState(EffectState effectState) {
+        this.effectState = effectState;
+    }
+
+    public List<Card> getTempBuffer() {
+        return tempBuffer;
+    }
+
+    public void setTempBuffer(List<Card> tempBuffer) {
+        this.tempBuffer = tempBuffer;
+    }
+
+    public String getPendingToasterPlayerId() {
+        return pendingToasterPlayerId;
+    }
+
+    public void setPendingToasterPlayerId(String pendingToasterPlayerId) {
+        this.pendingToasterPlayerId = pendingToasterPlayerId;
+    }
+
+    public Card getPendingEffectCard() {
+        return pendingEffectCard;
+    }
+
+    public void setPendingEffectCard(Card pendingEffectCard) {
+        this.pendingEffectCard = pendingEffectCard;
+    }
+
+    public Card.Rank getEffectSourceRank() {
+        return effectSourceRank;
+    }
+
+    public void setEffectSourceRank(Card.Rank effectSourceRank) {
+        this.effectSourceRank = effectSourceRank;
+    }
+
+    public boolean isAwaitingEffectChoice() {
+        return awaitingEffectChoice;
+    }
+
+    public void setAwaitingEffectChoice(boolean awaitingEffectChoice) {
+        this.awaitingEffectChoice = awaitingEffectChoice;
+    }
+
+    public String getEffectType() {
+        return effectType;
+    }
+
+    public void setEffectType(String effectType) {
+        this.effectType = effectType;
+    }
+
+    public boolean isHasDrawn() {
+        return hasDrawn;
+    }
+
+    public void setHasDrawn(boolean hasDrawn) {
+        this.hasDrawn = hasDrawn;
+    }
+
+    public boolean isHasDiscarded() {
+        return hasDiscarded;
+    }
+
+    public void setHasDiscarded(boolean hasDiscarded) {
+        this.hasDiscarded = hasDiscarded;
+    }
+
+    public boolean isHasPlayedToStack() {
+        return hasPlayedToStack;
+    }
+
+    public void setHasPlayedToStack(boolean hasPlayedToStack) {
+        this.hasPlayedToStack = hasPlayedToStack;
+    }
+
+    public boolean isCpuTurnPending() {
+        return cpuTurnPending;
+    }
+
+    public void setCpuTurnPending(boolean cpuTurnPending) {
+        this.cpuTurnPending = cpuTurnPending;
+    }
+
+    public String getLastAction() {
+        return lastAction;
+    }
+
+    public void setLastAction(String lastAction) {
+        this.lastAction = lastAction;
+    }
+
+    public Card getCpuLastDrawnCard() {
+        return cpuLastDrawnCard;
+    }
+
+    public void setCpuLastDrawnCard(Card cpuLastDrawnCard) {
+        this.cpuLastDrawnCard = cpuLastDrawnCard;
+    }
+
+    public int getPlayDirection() {
+        return playDirection;
+    }
+
+    public void setPlayDirection(int playDirection) {
+        this.playDirection = playDirection;
+    }
+
+    public int getSkipsRemaining() {
+        return skipsRemaining;
+    }
+
+    public void setSkipsRemaining(int skipsRemaining) {
+        this.skipsRemaining = skipsRemaining;
+    }
+
+    public String getEightTargetPlayerId() {
+        return eightTargetPlayerId;
+    }
+
+    public void setEightTargetPlayerId(String eightTargetPlayerId) {
+        this.eightTargetPlayerId = eightTargetPlayerId;
     }
 
     public Card getCardUnderDeck() {
@@ -108,6 +300,24 @@ public class GameState {
     public void setSevenTargetPlayerId(String sevenTargetPlayerId) {
         this.sevenTargetPlayerId = sevenTargetPlayerId;
     }
+
+    public int getJokerPickCount() {
+        return jokerPickCount;
+    }
+
+    public void setJokerPickCount(int jokerPickCount) {
+        this.jokerPickCount = jokerPickCount;
+    }
+
+    public boolean isJokerModeToStack() {
+        return jokerModeToStack;
+    }
+
+    public void setJokerModeToStack(boolean jokerModeToStack) {
+        this.jokerModeToStack = jokerModeToStack;
+    }
+
+    // ===== Game Logic Methods =====
 
     public Player getCurrentPlayer() {
         return players.get(currentPlayerIndex);

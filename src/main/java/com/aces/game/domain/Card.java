@@ -1,12 +1,5 @@
 package com.aces.game.domain;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-
-@Data
-@AllArgsConstructor
-@NoArgsConstructor
 public class Card {
     public enum Suit {
         HEARTS, DIAMONDS, CLUBS, SPADES, JOKER
@@ -18,7 +11,31 @@ public class Card {
 
     private Suit suit;
     private Rank rank;
-    
+
+    public Card() {
+    }
+
+    public Card(Suit suit, Rank rank) {
+        this.suit = suit;
+        this.rank = rank;
+    }
+
+    public Suit getSuit() {
+        return suit;
+    }
+
+    public void setSuit(Suit suit) {
+        this.suit = suit;
+    }
+
+    public Rank getRank() {
+        return rank;
+    }
+
+    public void setRank(Rank rank) {
+        this.rank = rank;
+    }
+
     // For CSS classes or display
     public String getDisplayString() {
         if (rank == Rank.JOKER) return "JOKER";
@@ -49,5 +66,25 @@ public class Card {
         String suitStr = suit.toString().toLowerCase();
         
         return "/images/cards/" + rankStr + "_of_" + suitStr + ".png";
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        Card card = (Card) o;
+        return suit == card.suit && rank == card.rank;
+    }
+
+    @Override
+    public int hashCode() {
+        int result = suit != null ? suit.hashCode() : 0;
+        result = 31 * result + (rank != null ? rank.hashCode() : 0);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        return "Card(" + "suit=" + suit + ", rank=" + rank + ')';
     }
 }
