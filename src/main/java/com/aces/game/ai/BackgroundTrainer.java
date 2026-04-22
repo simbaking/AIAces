@@ -178,6 +178,14 @@ public class BackgroundTrainer {
             List<Double> inputs = AiInputMapper.extractInputs(sim, current);
             List<Double> outputs = playerBrains[playerIdx].feedForward(inputs);
 
+            // Capture opponent distances BEFORE action to check if we accidentally help them
+            double[] oppDistBefore = new double[sim.getPlayers().size()];
+            for (int i = 0; i < sim.getPlayers().size(); i++) {
+                if (i != playerIdx) {
+                    oppDistBefore[i] = AiInputMapper.getDistanceToAce(sim.getPlayers().get(i));
+                }
+            }
+
             // Sort actions by AI confidence
             List<Integer> sortedActions = new ArrayList<>();
             for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
@@ -288,6 +296,18 @@ public class BackgroundTrainer {
             // 4. Measure distance to Ace AFTER this move
             double distNow = AiInputMapper.getDistanceToAce(current);
 
+            // Calculate if we helped any opponent
+            double oppAdvancementPenalty = 0.0;
+            for (int i = 0; i < sim.getPlayers().size(); i++) {
+                if (i != playerIdx) {
+                    double distAfter = AiInputMapper.getDistanceToAce(sim.getPlayers().get(i));
+                    double oppProgress = oppDistBefore[i] - distAfter; // Positive means they got closer
+                    if (oppProgress > 0) {
+                        oppAdvancementPenalty += oppProgress;
+                    }
+                }
+            }
+
             // Record the move
             moveHistory[playerIdx].add(new MoveRecord(inputs, chosenActionIndex, distNow));
 
@@ -325,6 +345,11 @@ public class BackgroundTrainer {
                 } else {
                     // Got further away — penalize especially if opponents are close
                     reward = (closestOppDist <= 3) ? -0.2 : 0.0;
+                }
+
+                // Severe penalty if our action actively made ANY opponent closer to the Ace
+                if (oppAdvancementPenalty > 0) {
+                    reward -= (oppAdvancementPenalty * 2.0);
                 }
 
                 GlobalAi.trainSafe(inputs, chosenActionIndex, reward);
