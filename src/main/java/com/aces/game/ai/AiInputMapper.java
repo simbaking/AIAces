@@ -125,18 +125,42 @@ public class AiInputMapper {
     }
 
     /**
-     * Calculate distance to Ace (how many ranks away from Ace).
-     * Ace = 0 (already there), Two = 1, ... King = 12, Empty stack = 14.
+     * Calculate distance to Ace (minimum steps to reach Ace).
+     * Considers BOTH directions: going down through 2→Ace (back door)
+     * and going up through King→Ace (normal).
+     * Ace = 0, Two = 1, King = 1, Seven = 6 (furthest), Empty stack = 14.
+     *
+     * Joker on stack uses the jokerStackValue (not 0, since Joker can't be Ace).
      */
     public static double getDistanceToAce(Player p) {
         Card top = p.getTopStack();
         if (top == null)
             return 14.0; // No stack = max distance
-        if (top.getRank() == Card.Rank.JOKER)
-            return 0.0; // Joker = instant win
 
-        int rankValue = switch (top.getRank()) {
-            case ACE -> 0; // Already at Ace!
+        if (top.getRank() == Card.Rank.ACE)
+            return 0.0;
+
+        if (top.getRank() == Card.Rank.JOKER) {
+            // Joker can't BE Ace — use its assigned value
+            Card.Rank jokerValue = p.getJokerStackValue();
+            if (jokerValue != null) {
+                return getMinDistanceForRank(jokerValue);
+            }
+            return 6.0; // Default mid-range if no value set yet
+        }
+
+        return getMinDistanceForRank(top.getRank());
+    }
+
+    /**
+     * Minimum steps from a rank to Ace, considering both directions:
+     *   Down path: rank → ... → 2 → Ace (back door)
+     *   Up path:   rank → ... → King → Ace (normal)
+     * Returns min(downPath, upPath).
+     */
+    private static double getMinDistanceForRank(Card.Rank rank) {
+        int linearDist = switch (rank) {
+            case ACE -> 0;
             case TWO -> 1;
             case THREE -> 2;
             case FOUR -> 3;
@@ -149,9 +173,11 @@ public class AiInputMapper {
             case JACK -> 10;
             case QUEEN -> 11;
             case KING -> 12;
-            case JOKER -> 0;
+            case JOKER -> 6;
         };
-        return rankValue;
+        if (linearDist == 0) return 0;
+        // Can go either direction: down to 2→Ace or up to K→Ace
+        return Math.min(linearDist, 13 - linearDist);
     }
 
     private static double normalizeRank(Card c) {

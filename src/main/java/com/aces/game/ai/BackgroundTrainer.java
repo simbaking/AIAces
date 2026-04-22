@@ -298,26 +298,33 @@ public class BackgroundTrainer {
                 window.removeFirst();
             }
 
-            // 5. Per-move intermediate training based on the average of up to 11 moves (10 previous + current)
+            // 5. Per-move intermediate training — opponent-aware reward
             if (window.size() >= 2) {
                 double sum = 0;
-                // Include all elements in the window (including distNow)
                 for (int i = 0; i < window.size(); i++) {
                     sum += window.get(i);
                 }
-                double avgDist = sum / window.size();  // Average distance including the current move
+                double avgDist = sum / window.size();
                 double progress = avgDist - distNow; // Positive = got closer to Ace
+
+                // Check opponent proximity
+                double closestOppDist = getClosestOpponentDistance(sim, playerIdx);
+                double selfLead = closestOppDist - distNow; // Positive = we're ahead
 
                 double reward;
                 if (progress > 0) {
-                    // Got closer — small positive reward scaled by how much progress
-                    reward = Math.min(0.3 * progress, 3.0); // Cap at 3.0
+                    // Got closer — reward scaled by progress
+                    reward = Math.min(0.3 * progress, 3.0);
+                    // Bonus if we're ahead of the closest opponent
+                    if (selfLead > 0) reward *= 1.3;
+                    // Reduce if opponents are dangerously close to Ace
+                    if (closestOppDist <= 2 && distNow > closestOppDist) reward *= 0.5;
                 } else if (progress == 0) {
-                    // No change — tiny neutral reward
-                    reward = 0.05;
+                    // No change — only tiny reward if we're well ahead
+                    reward = (selfLead > 2) ? 0.05 : 0.0;
                 } else {
-                    // Got further away — no reward
-                    reward = 0.0;
+                    // Got further away — penalize especially if opponents are close
+                    reward = (closestOppDist <= 3) ? -0.2 : 0.0;
                 }
 
                 GlobalAi.trainSafe(inputs, chosenActionIndex, reward);
@@ -353,8 +360,9 @@ public class BackgroundTrainer {
                             // Winner: reward scales from 3.0 (oldest) to 10.0 (newest)
                             reward = 3.0 + 7.0 * recency;
                         } else {
-                            // Loser: penalty scales from 0.1 (oldest, mild) to 0.0 (newest, harsh)
-                            reward = 0.1 * (1.0 - recency);
+                            // Loser: NEGATIVE reward — recent losing moves punished harder
+                            // Scales from -0.5 (oldest, mild) to -3.0 (newest, harsh)
+                            reward = -(0.5 + 2.5 * recency);
                         }
 
                         GlobalAi.trainSafe(rec.inputs, rec.actionIndex, reward);
@@ -472,29 +480,203 @@ public class BackgroundTrainer {
     }
 
     /**
-     * Simplified card effects for background games.
-     * Only applies instant effects (skip, reverse, draw).
-     * Skips interactive effects (Queen pick, Joker choice, etc.) for speed.
+     * Applies card discard effects for background self-play games.
+     * Now includes full simulation of interactive effects (7, 8, 10, Q, Joker)
+     * so the network can learn their strategic value against opponents.
      */
     private void applySimpleEffect(GameState sim, Player source, Card card) {
         switch (card.getRank()) {
-            case FOUR: // Skip next player
+
+            // --- Instant effects (same as before) ---
+            case FOUR:
             case JACK:
                 sim.skipPlayers(1);
                 break;
-            case KING: // Reverse direction
+            case KING:
                 sim.reverseDirection();
                 break;
             case TWO: // Next player draws 2
                 Player nextForTwo = getNextPlayer(sim);
                 if (nextForTwo != null) drawN(sim, nextForTwo, 2);
                 break;
-            case NINE: // Player draws 1
+            case THREE: // Self draws 3
+                drawN(sim, source, 3);
+                break;
+            case FIVE: // Self draws 1
                 drawN(sim, source, 1);
                 break;
+            case SIX: // Skip next
+                sim.skipPlayers(1);
+                break;
+            case NINE: // Self draws 1 (per rules)
+                drawN(sim, source, 1);
+                break;
+
+            // --- Interactive effects: simulated heuristically ---
+
+            case SEVEN: {
+                // Sabotage: put a card from hand onto the opponent's stack
+                // Target: opponent that is closest to Ace (most dangerous)
+                Player target = getMostDangerousOpponent(sim, source);
+                if (target != null && !source.getHand().isEmpty()) {
+                    // Pick the worst card for our hand to give (highest distance filler)
+                    // — give a card that disrupts the target's sequence most
+                    int worstIdx = findWorstCardToGive(source, target);
+                    if (worstIdx >= 0) {
+                        Card given = source.getHand().remove(worstIdx);
+                        target.getStack().add(given);
+                    }
+                }
+                break;
+            }
+
+            case EIGHT: {
+                // Steal: take top card from the opponent with the largest stack
+                Player richTarget = getLargestStackOpponent(sim, source);
+                if (richTarget != null && richTarget.getStack().size() > 1) {
+                    Card stolen = richTarget.getStack().remove(richTarget.getStack().size() - 1);
+                    source.getHand().add(stolen);
+                }
+                break;
+            }
+
+            case TEN: {
+                // Strip: take top 3 cards from the most-advanced opponent's stack (needs 4+)
+                Player advancedTarget = getMostAdvancedOpponent(sim, source);
+                if (advancedTarget != null && advancedTarget.getStack().size() >= 4) {
+                    for (int i = 0; i < 3; i++) {
+                        Card taken = advancedTarget.getStack().remove(advancedTarget.getStack().size() - 1);
+                        source.getHand().add(taken);
+                    }
+                }
+                break;
+            }
+
+            case QUEEN: {
+                // Fortune Seer: draw 3, keep the one that best improves distance to Ace
+                List<Card> options = new ArrayList<>();
+                for (int i = 0; i < 3; i++) {
+                    if (sim.getDrawPile().isEmpty()) reshuffleDeck(sim);
+                    if (!sim.getDrawPile().isEmpty()) options.add(sim.getDrawPile().pop());
+                }
+                if (!options.isEmpty()) {
+                    // Pick the card whose rank is closest to the top of our stack
+                    Card best = chooseBestCardForStack(source, options);
+                    source.getHand().add(best);
+                    options.remove(best);
+                    // Return rest to deck
+                    for (Card c : options) sim.getDrawPile().push(c);
+                }
+                break;
+            }
+
+            case JOKER: {
+                // Joker discard: move up to 2 cards from our discard back to stack,
+                // or 1 card from discard to hand. Heuristic: prefer stack moves.
+                if (!source.getDiscardPile().isEmpty()) {
+                    int moved = 0;
+                    // Try to move cards that fit the current stack sequence
+                    for (int attempt = 0; attempt < source.getDiscardPile().size() && moved < 2; attempt++) {
+                        Card candidate = source.getDiscardPile().get(attempt);
+                        Card stackTop = source.getTopStack();
+                        boolean fits = (stackTop == null)
+                                ? (candidate.getRank() != Card.Rank.ACE && candidate.getRank() != Card.Rank.JOKER)
+                                : isSequenceValid(source, stackTop, candidate);
+                        if (fits) {
+                            source.getDiscardPile().remove(attempt);
+                            source.getStack().add(candidate);
+                            moved++;
+                            attempt--; // re-check same index after removal
+                        }
+                    }
+                    // If couldn't move to stack, pull best card to hand
+                    if (moved == 0 && !source.getDiscardPile().isEmpty()) {
+                        Card rescued = source.getDiscardPile().remove(source.getDiscardPile().size() - 1);
+                        source.getHand().add(rescued);
+                    }
+                }
+                break;
+            }
+
             default:
                 break;
         }
+    }
+
+    /** Opponent closest to Ace (most dangerous). */
+    private Player getMostDangerousOpponent(GameState sim, Player self) {
+        Player best = null;
+        double minDist = Double.MAX_VALUE;
+        for (Player p : sim.getPlayers()) {
+            if (p == self) continue;
+            double d = AiInputMapper.getDistanceToAce(p);
+            if (d < minDist) { minDist = d; best = p; }
+        }
+        return best;
+    }
+
+    /** Opponent that is furthest from Ace (largest stack size used as proxy). */
+    private Player getLargestStackOpponent(GameState sim, Player self) {
+        Player best = null;
+        int maxStack = 0;
+        for (Player p : sim.getPlayers()) {
+            if (p == self) continue;
+            if (p.getStack().size() > maxStack) { maxStack = p.getStack().size(); best = p; }
+        }
+        return best;
+    }
+
+    /** Opponent whose stack top is closest to Ace (most advanced). */
+    private Player getMostAdvancedOpponent(GameState sim, Player self) {
+        Player best = null;
+        double minDist = Double.MAX_VALUE;
+        for (Player p : sim.getPlayers()) {
+            if (p == self) continue;
+            if (p.getStack().size() < 4) continue; // TEN needs 4+ cards
+            double d = AiInputMapper.getDistanceToAce(p);
+            if (d < minDist) { minDist = d; best = p; }
+        }
+        return best;
+    }
+
+    /**
+     * Finds the index of the card in the source's hand that is worst for them
+     * (furthest from their current stack sequence) to give to the target.
+     */
+    private int findWorstCardToGive(Player source, Player target) {
+        int worstIdx = -1;
+        int worstVal = Integer.MAX_VALUE;
+        Card sourceTop = source.getTopStack();
+        for (int i = 0; i < source.getHand().size(); i++) {
+            Card c = source.getHand().get(i);
+            // Skip Ace — can't place on someone's stack via 7
+            if (c.getRank() == Card.Rank.ACE) continue;
+            // Prefer cards that don't fit our own stack (useless to us)
+            boolean fitsUs = (sourceTop != null) && isSequenceValid(source, sourceTop, c);
+            int val = fitsUs ? 100 : getCardValue(c); // High val = prefer to keep
+            if (val < worstVal) { worstVal = val; worstIdx = i; }
+        }
+        return worstIdx;
+    }
+
+    /**
+     * From a list of candidate cards, picks the one that best continues
+     * the player's current stack sequence (or has highest raw value if none fit).
+     */
+    private Card chooseBestCardForStack(Player p, List<Card> options) {
+        Card bestFit = null;
+        Card bestAny = options.get(0);
+        int bestFitVal = -1;
+        int bestAnyVal = getCardValue(options.get(0));
+        Card top = p.getTopStack();
+        for (Card c : options) {
+            int val = getCardValue(c);
+            if (val > bestAnyVal) { bestAnyVal = val; bestAny = c; }
+            if (top != null && isSequenceValid(p, top, c) && val > bestFitVal) {
+                bestFitVal = val; bestFit = c;
+            }
+        }
+        return (bestFit != null) ? bestFit : bestAny;
     }
 
     private Player getNextPlayer(GameState sim) {
@@ -510,5 +692,18 @@ public class BackgroundTrainer {
                 p.getHand().add(sim.getDrawPile().pop());
             }
         }
+    }
+
+    /**
+     * Returns the minimum distance-to-Ace among all opponents of the given player.
+     */
+    private double getClosestOpponentDistance(GameState sim, int playerIdx) {
+        double closest = 14.0;
+        for (int i = 0; i < sim.getPlayers().size(); i++) {
+            if (i == playerIdx) continue;
+            double d = AiInputMapper.getDistanceToAce(sim.getPlayers().get(i));
+            closest = Math.min(closest, d);
+        }
+        return closest;
     }
 }
