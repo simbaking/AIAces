@@ -220,6 +220,9 @@ public class BackgroundTrainer {
                         }
 
                         if (valid) {
+                            // Capture distance BEFORE playing the card
+                            double distBefore = AiInputMapper.getDistanceToAce(current);
+
                             // Play it!
                             current.getHand().remove(handIdx);
                             current.getStack().add(card);
@@ -240,6 +243,21 @@ public class BackgroundTrainer {
                                         current.setJokerStackValue(Card.Rank.SEVEN);
                                     }
                                 }
+                            }
+
+                            // --- Immediate stack-progress reward ---
+                            // Reward the network every time it plays a card to its
+                            // own stack that moves it closer to Ace.
+                            double distAfterStack = AiInputMapper.getDistanceToAce(current);
+                            double stackImprovement = distBefore - distAfterStack; // Positive = got closer
+                            if (stackImprovement > 0) {
+                                // Scale: small progress ~0.2, big leap ~5.0
+                                // Extra bonus when very close to Ace (dist <= 2)
+                                double stackReward = 0.5 * stackImprovement;
+                                if (distAfterStack <= 2) {
+                                    stackReward *= 2.0; // Double reward for approaching the finish line
+                                }
+                                GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
                             }
 
                             // Check win: Ace on top of stack
