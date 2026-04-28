@@ -366,6 +366,76 @@ public class NeuralNetwork {
         this.layerActivations = layerActivations;
     }
 
+    /**
+     * Computes the weight deltas between this network and a snapshot taken earlier,
+     * multiplies those deltas by the given multiplier, and reapplies them on top
+     * of the current weights. This amplifies the learning that occurred since the snapshot.
+     *
+     * newWeight = currentWeight + (currentWeight - snapshotWeight) * (multiplier - 1)
+     * Equivalently: newWeight = snapshotWeight + (currentWeight - snapshotWeight) * multiplier
+     *
+     * @param snapshot The network state captured before training began
+     * @param multiplier How much to scale the deltas (e.g., 1.25 = 25% boost)
+     */
+    public void applyAmplifiedDeltas(NeuralNetwork snapshot, double multiplier) {
+        if (multiplier <= 1.0) return; // No amplification needed
+
+        // Strategy layers
+        amplifyLayerList(this.strategyLayers, snapshot.strategyLayers, multiplier);
+
+        // Strategy bottleneck
+        amplifyLayer(this.strategyBottleneck, snapshot.strategyBottleneck, multiplier);
+
+        // Plan pre layers
+        if (this.planPreLayers != null && snapshot.planPreLayers != null) {
+            amplifyLayerList(this.planPreLayers, snapshot.planPreLayers, multiplier);
+        }
+
+        // Plan post layers
+        if (this.planPostLayers != null && snapshot.planPostLayers != null) {
+            amplifyLayerList(this.planPostLayers, snapshot.planPostLayers, multiplier);
+        }
+
+        // Execution layers
+        amplifyLayerList(this.executionLayers, snapshot.executionLayers, multiplier);
+
+        // Output layer
+        amplifyLayer(this.outputLayer, snapshot.outputLayer, multiplier);
+
+        // Keep plan weights in sync
+        if (this.planPreLayers != null) {
+            syncPlanWeights();
+        }
+    }
+
+    private void amplifyLayerList(List<Layer> currentLayers, List<Layer> snapshotLayers, double multiplier) {
+        if (currentLayers == null || snapshotLayers == null) return;
+        int count = Math.min(currentLayers.size(), snapshotLayers.size());
+        for (int i = 0; i < count; i++) {
+            amplifyLayer(currentLayers.get(i), snapshotLayers.get(i), multiplier);
+        }
+    }
+
+    private void amplifyLayer(Layer current, Layer snapshot, double multiplier) {
+        if (current == null || snapshot == null) return;
+        int neuronCount = Math.min(current.getNeurons().size(), snapshot.getNeurons().size());
+        for (int n = 0; n < neuronCount; n++) {
+            Neuron curNeuron = current.getNeurons().get(n);
+            Neuron snapNeuron = snapshot.getNeurons().get(n);
+            // Amplify weights
+            int wCount = Math.min(curNeuron.getWeights().size(), snapNeuron.getWeights().size());
+            for (int w = 0; w < wCount; w++) {
+                double curW = curNeuron.getWeights().get(w);
+                double snapW = snapNeuron.getWeights().get(w);
+                double delta = curW - snapW;
+                curNeuron.getWeights().set(w, curW + delta * (multiplier - 1.0));
+            }
+            // Amplify bias
+            double biasDelta = curNeuron.getBias() - snapNeuron.getBias();
+            curNeuron.setBias(curNeuron.getBias() + biasDelta * (multiplier - 1.0));
+        }
+    }
+
     // --- Plan Network Getters/Setters ---
     public List<Layer> getPlanPreLayers() {
         return planPreLayers;

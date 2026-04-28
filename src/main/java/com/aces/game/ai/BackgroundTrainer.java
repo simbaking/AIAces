@@ -36,7 +36,16 @@ public class BackgroundTrainer {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicInteger gamesPlayed = new AtomicInteger(0);
+    private final AtomicInteger gameCounter = new AtomicInteger(0); // Tracks 0,1,2 cycle for solo games
     private static final int MAX_TURNS_PER_GAME = 500; // Safety limit
+
+    // --- Solo batch tracking ---
+    private static final int SOLO_BATCH_SIZE = 20; // Games per solo batch
+    private int soloBatchCount = 0;                 // Solo games played in current batch
+    private int soloBatchTotalMoves = 0;             // Accumulated moves-to-ace across the batch
+    private int soloBatchAceCount = 0;               // How many games in the batch actually reached Ace
+    private double bestAverageMovesToAce = Double.MAX_VALUE; // All-time record
+    private NeuralNetwork batchSnapshot = null;      // Weights snapshot taken at batch start
 
     /** A snapshot of one move: the NN inputs, chosen action, and distance to Ace after acting. */
     private static class MoveRecord {
@@ -76,7 +85,13 @@ public class BackgroundTrainer {
     private void trainingLoop() {
         while (running.get()) {
             try {
-                playOneGame();
+                // Every 3rd game (index 2 in 0,1,2 cycle) is a solo one-player game
+                int cycle = gameCounter.getAndIncrement() % 3;
+                if (cycle == 2) {
+                    runSoloBatchGame();
+                } else {
+                    playOneGame();
+                }
                 gamesPlayed.incrementAndGet();
 
                 if (gamesPlayed.get() % 50 == 0) {
@@ -95,6 +110,77 @@ public class BackgroundTrainer {
                     return;
                 }
             }
+        }
+    }
+
+    /**
+     * Manages the solo game batch lifecycle.
+     * - On the first call of a new batch, snapshots the current network weights.
+     * - Plays one solo game and tracks moves-to-ace.
+     * - On the 20th game, evaluates average performance vs the record and
+     *   amplifies learned weight deltas by 1.25x per 1% improvement.
+     */
+    private void runSoloBatchGame() {
+        // Start of a new batch?
+        if (soloBatchCount == 0) {
+            // Snapshot the network weights BEFORE training begins
+            synchronized (GlobalAi.getInstance()) {
+                batchSnapshot = GlobalAi.getInstance().deepCopy();
+            }
+            soloBatchTotalMoves = 0;
+            soloBatchAceCount = 0;
+        }
+
+        // Play one solo game and capture how many moves it took
+        int movesToAce = playOneSoloGame();
+        soloBatchCount++;
+
+        if (movesToAce > 0) {
+            // Reached Ace — record the move count
+            soloBatchTotalMoves += movesToAce;
+            soloBatchAceCount++;
+        }
+
+        // End of batch?
+        if (soloBatchCount >= SOLO_BATCH_SIZE) {
+            soloBatchCount = 0;
+
+            if (soloBatchAceCount > 0 && batchSnapshot != null) {
+                double avgMoves = (double) soloBatchTotalMoves / soloBatchAceCount;
+
+                if (bestAverageMovesToAce == Double.MAX_VALUE) {
+                    // First successful batch — set the baseline
+                    bestAverageMovesToAce = avgMoves;
+                    System.out.println("BackgroundTrainer [SOLO]: Initial record set — avg moves to Ace: "
+                            + String.format("%.1f", avgMoves) + " (" + soloBatchAceCount + "/" + SOLO_BATCH_SIZE + " reached Ace)");
+                } else if (avgMoves < bestAverageMovesToAce) {
+                    // Improvement! Calculate % reduction vs the record
+                    double percentImprovement = ((bestAverageMovesToAce - avgMoves) / bestAverageMovesToAce) * 100.0;
+                    // For every 1% reduction, multiply deltas by 1.25
+                    // So total multiplier = 1.25 ^ percentImprovement
+                    double multiplier = Math.pow(1.25, percentImprovement);
+
+                    // Cap multiplier to prevent extreme weight explosions
+                    multiplier = Math.min(multiplier, 10.0);
+
+                    synchronized (GlobalAi.getInstance()) {
+                        GlobalAi.getInstance().applyAmplifiedDeltas(batchSnapshot, multiplier);
+                    }
+
+                    System.out.println("BackgroundTrainer [SOLO]: NEW RECORD! avg moves " 
+                            + String.format("%.1f", bestAverageMovesToAce) + " → " + String.format("%.1f", avgMoves)
+                            + " (" + String.format("%.1f", percentImprovement) + "% faster, "
+                            + String.format("%.2f", multiplier) + "x delta amplification, "
+                            + soloBatchAceCount + "/" + SOLO_BATCH_SIZE + " reached Ace)");
+
+                    bestAverageMovesToAce = avgMoves;
+                }
+                // If avgMoves >= record, do nothing — only reward improvements
+            } else {
+                System.out.println("BackgroundTrainer [SOLO]: Batch complete — no games reached Ace.");
+            }
+
+            batchSnapshot = null; // Release snapshot memory
         }
     }
 
@@ -415,6 +501,318 @@ public class BackgroundTrainer {
                 // Small mutation for exploration
                 GlobalAi.mutateSafe(0.05, 0.02);
             }
+        }
+    }
+
+    /**
+     * Plays one solo (one-player) training game with no opponents.
+     * The AI draws cards and tries to build its stack to Ace as efficiently
+     * as possible. Uses the same per-move rewards as normal games but with
+     * no opponent-awareness. End-of-game trajectory replay uses standard
+     * win/loss rewards. Efficiency bonuses are handled at the batch level
+     * by {@link #runSoloBatchGame()}.
+     *
+     * @return number of moves to reach Ace (positive), or -1 if Ace was not reached
+     */
+    @SuppressWarnings("unchecked")
+    private int playOneSoloGame() {
+        // --- Setup ---
+        GameState sim = new GameState();
+        sim.setPhase(GameState.Phase.PLAYING);
+        initDeck(sim);
+
+        // Single player
+        sim.getPlayers().add(new Player("solo", "SOLO", false));
+        Player solo = sim.getPlayers().get(0);
+
+        // Deal starting stack card
+        if (!sim.getDrawPile().isEmpty()) {
+            Card startCard = sim.getDrawPile().pop();
+            while ((startCard.getRank() == Card.Rank.ACE || startCard.getRank() == Card.Rank.JOKER)
+                    && !sim.getDrawPile().isEmpty()) {
+                sim.getDrawPile().add(0, startCard);
+                startCard = sim.getDrawPile().pop();
+            }
+            solo.getStack().add(startCard);
+        }
+
+        // Fork a mutated brain for exploration
+        NeuralNetwork soloBrain;
+        synchronized (GlobalAi.getInstance()) {
+            soloBrain = GlobalAi.getInstance().deepCopy();
+            soloBrain.mutate(0.15, 0.08);
+        }
+
+        // Per-move tracking
+        List<MoveRecord> moveHistory = new ArrayList<>();
+        LinkedList<Double> distanceWindow = new LinkedList<>();
+        distanceWindow.add(AiInputMapper.getDistanceToAce(solo));
+
+        // --- Game Loop ---
+        int turnCount = 0;
+        boolean reachedAce = false;
+
+        while (turnCount < MAX_TURNS_PER_GAME && running.get()) {
+            turnCount++;
+
+            // 1. Draw
+            if (sim.getDrawPile().isEmpty()) {
+                reshuffleDeck(sim);
+            }
+            if (sim.getDrawPile().isEmpty()) {
+                break; // No cards left
+            }
+            Card drawn = sim.getDrawPile().pop();
+            solo.getHand().add(drawn);
+            sim.setHasDrawn(true);
+
+            // 2. Brain decision
+            List<Double> inputs = AiInputMapper.extractInputs(sim, solo);
+            List<Double> outputs = soloBrain.feedForward(inputs);
+
+            // Sort actions by AI confidence
+            List<Integer> sortedActions = new ArrayList<>();
+            for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
+            sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
+
+            // 3. Execute action — only stack and pass/discard, no opponent effects
+            boolean acted = false;
+            int chosenActionIndex = 0;
+
+            for (int action : sortedActions) {
+                if (action >= 4) { // STACK Specific Card
+                    int targetCardIndex = action - 4;
+                    int handIdx = -1;
+                    for (int i = 0; i < solo.getHand().size(); i++) {
+                        if (AiInputMapper.getCardIndex(solo.getHand().get(i)) == targetCardIndex) {
+                            handIdx = i;
+                            break;
+                        }
+                    }
+
+                    if (handIdx != -1) {
+                        Card card = solo.getHand().get(handIdx);
+                        Card top = solo.getTopStack();
+                        boolean valid = false;
+                        if (top == null) {
+                            valid = (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER);
+                        } else {
+                            valid = isSequenceValid(solo, top, card);
+                        }
+
+                        if (valid) {
+                            double distBefore = AiInputMapper.getDistanceToAce(solo);
+
+                            // Play it!
+                            solo.getHand().remove(handIdx);
+                            solo.getStack().add(card);
+                            sim.setHasPlayedToStack(true);
+                            acted = true;
+                            chosenActionIndex = action;
+
+                            // Handle Joker stack value (auto-pick)
+                            if (card.getRank() == Card.Rank.JOKER) {
+                                Card below = solo.getStack().size() >= 2
+                                        ? solo.getStack().get(solo.getStack().size() - 2)
+                                        : null;
+                                if (below != null) {
+                                    int ord = below.getRank().ordinal();
+                                    if (ord < Card.Rank.values().length - 1) {
+                                        solo.setJokerStackValue(Card.Rank.values()[ord + 1]);
+                                    } else {
+                                        solo.setJokerStackValue(Card.Rank.SEVEN);
+                                    }
+                                }
+                            }
+
+                            // --- Immediate stack-progress reward (same as normal) ---
+                            double distAfterStack = AiInputMapper.getDistanceToAce(solo);
+                            double stackImprovement = distBefore - distAfterStack;
+                            if (stackImprovement > 0) {
+                                double stackReward = 0.5 * stackImprovement;
+                                if (distAfterStack <= 2) {
+                                    stackReward *= 2.0;
+                                }
+                                GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
+                            }
+
+                            // Check win: Ace on top of stack
+                            if (card.getRank() == Card.Rank.ACE) {
+                                reachedAce = true;
+                                double distNow = AiInputMapper.getDistanceToAce(solo);
+                                moveHistory.add(new MoveRecord(inputs, chosenActionIndex, distNow));
+                                break;
+                            }
+                            break; // Done acting
+                        }
+                    }
+                } else if (action >= 1 && action <= 3) { // DISCARD (no opponent effects in solo)
+                    if (!sim.isHasPlayedToStack()) {
+                        int idx = findBestDiscard(solo);
+                        if (idx != -1) {
+                            Card card = solo.getHand().remove(idx);
+                            solo.getDiscardPile().add(card);
+                            acted = true;
+                            chosenActionIndex = action;
+                            // In solo mode, only apply self-targeting effects (draw cards)
+                            applySoloEffect(sim, solo, card);
+                            break;
+                        }
+                    }
+                } else if (action == 0) { // PASS
+                    if (sim.isHasPlayedToStack()) {
+                        acted = true;
+                        chosenActionIndex = action;
+                        break;
+                    }
+                }
+            }
+
+            // Fallback
+            if (!acted && !reachedAce) {
+                if (!sim.isHasPlayedToStack() && !solo.getHand().isEmpty()) {
+                    int idx = findBestDiscard(solo);
+                    if (idx != -1) {
+                        Card card = solo.getHand().remove(idx);
+                        solo.getDiscardPile().add(card);
+                        applySoloEffect(sim, solo, card);
+                        chosenActionIndex = 3;
+                    }
+                } else {
+                    chosenActionIndex = 0;
+                }
+            }
+
+            if (reachedAce) break;
+
+            // 4. Measure distance to Ace AFTER this move
+            double distNow = AiInputMapper.getDistanceToAce(solo);
+
+            // Record the move
+            moveHistory.add(new MoveRecord(inputs, chosenActionIndex, distNow));
+
+            // Update rolling distance window
+            distanceWindow.addLast(distNow);
+            if (distanceWindow.size() > 11) {
+                distanceWindow.removeFirst();
+            }
+
+            // 5. Per-move intermediate training (no opponent awareness needed)
+            if (distanceWindow.size() >= 2) {
+                double sum = 0;
+                for (int i = 0; i < distanceWindow.size(); i++) {
+                    sum += distanceWindow.get(i);
+                }
+                double avgDist = sum / distanceWindow.size();
+                double progress = avgDist - distNow; // Positive = got closer
+
+                double reward;
+                if (progress > 0) {
+                    reward = Math.min(0.3 * progress, 3.0);
+                } else if (progress == 0) {
+                    reward = 0.0;
+                } else {
+                    // Got further away — mild penalty
+                    reward = -0.1;
+                }
+
+                GlobalAi.trainSafe(inputs, chosenActionIndex, reward);
+            }
+
+            // Reset turn flags for next iteration
+            sim.setHasDrawn(false);
+            sim.setHasPlayedToStack(false);
+        }
+
+        // --- End-of-solo-game: trajectory replay (same as normal game win/loss) ---
+        int totalMoves = moveHistory.size();
+        if (!moveHistory.isEmpty()) {
+            synchronized (GlobalAi.getInstance()) {
+                if (reachedAce) {
+                    // Replay all moves with win reward
+                    for (int m = 0; m < totalMoves; m++) {
+                        MoveRecord rec = moveHistory.get(m);
+                        double recency = (totalMoves == 1) ? 1.0
+                                : 0.3 + 0.7 * ((double) m / (totalMoves - 1));
+                        double reward = 3.0 + 7.0 * recency;
+                        GlobalAi.trainSafe(rec.inputs, rec.actionIndex, reward);
+                    }
+                } else {
+                    // Didn't reach Ace — penalize (milder than losing to an opponent)
+                    for (int m = 0; m < totalMoves; m++) {
+                        MoveRecord rec = moveHistory.get(m);
+                        double recency = (totalMoves == 1) ? 1.0
+                                : 0.3 + 0.7 * ((double) m / (totalMoves - 1));
+                        double reward = -(0.3 + 1.5 * recency);
+                        GlobalAi.trainSafe(rec.inputs, rec.actionIndex, reward);
+                    }
+                }
+
+                // Small mutation for exploration
+                GlobalAi.mutateSafe(0.05, 0.02);
+            }
+        }
+
+        // Return moves count (positive if reached Ace, -1 if not)
+        return reachedAce ? totalMoves : -1;
+    }
+
+    /**
+     * Solo-mode discard effects: only applies effects that affect the player themselves.
+     * Opponent-targeting effects (7, 8, 10) are no-ops in solo.
+     */
+    private void applySoloEffect(GameState sim, Player source, Card card) {
+        switch (card.getRank()) {
+            case THREE: // Self draws 3
+                drawN(sim, source, 3);
+                break;
+            case FIVE: // Self draws 1
+                drawN(sim, source, 1);
+                break;
+            case NINE: // Self draws 1
+                drawN(sim, source, 1);
+                break;
+            case QUEEN: { // Fortune Seer: draw 3, keep best
+                List<Card> options = new ArrayList<>();
+                for (int i = 0; i < 3; i++) {
+                    if (sim.getDrawPile().isEmpty()) reshuffleDeck(sim);
+                    if (!sim.getDrawPile().isEmpty()) options.add(sim.getDrawPile().pop());
+                }
+                if (!options.isEmpty()) {
+                    Card best = chooseBestCardForStack(source, options);
+                    source.getHand().add(best);
+                    options.remove(best);
+                    for (Card c : options) sim.getDrawPile().push(c);
+                }
+                break;
+            }
+            case JOKER: { // Joker discard: move cards from discard back to stack
+                if (!source.getDiscardPile().isEmpty()) {
+                    int moved = 0;
+                    for (int attempt = 0; attempt < source.getDiscardPile().size() && moved < 2; attempt++) {
+                        Card candidate = source.getDiscardPile().get(attempt);
+                        Card stackTop = source.getTopStack();
+                        boolean fits = (stackTop == null)
+                                ? (candidate.getRank() != Card.Rank.ACE && candidate.getRank() != Card.Rank.JOKER)
+                                : isSequenceValid(source, stackTop, candidate);
+                        if (fits) {
+                            source.getDiscardPile().remove(attempt);
+                            source.getStack().add(candidate);
+                            moved++;
+                            attempt--;
+                        }
+                    }
+                    if (moved == 0 && !source.getDiscardPile().isEmpty()) {
+                        Card rescued = source.getDiscardPile().remove(source.getDiscardPile().size() - 1);
+                        source.getHand().add(rescued);
+                    }
+                }
+                break;
+            }
+            // 4/J (skip), K (reverse), 2 (next draws 2), 6 (skip),
+            // 7 (sabotage), 8 (steal), 10 (strip) — no effect in solo
+            default:
+                break;
         }
     }
 
