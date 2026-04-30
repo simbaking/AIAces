@@ -307,110 +307,103 @@ public class BackgroundTrainer {
                 }
             }
 
-            // Sort actions by AI confidence
-            List<Integer> sortedActions = new ArrayList<>();
-            for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
-            sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
-
             // 3. Execute action
             /* ACTIONS: 0=PASS, 1=D-SKIP, 2=D-ATK, 3=D-NRM, 4-57=STACK Specific Card */
             boolean acted = false;
             int chosenActionIndex = 0; // The actual action we ended up taking
 
-            for (int action : sortedActions) {
-                if (action >= 4) { // STACK Specific Card
-                    int targetCardIndex = action - 4;
-                    // Does the player have this exact card?
-                    int handIdx = -1;
-                    for (int i = 0; i < current.getHand().size(); i++) {
-                        if (AiInputMapper.getCardIndex(current.getHand().get(i)) == targetCardIndex) {
-                            handIdx = i;
-                            break;
-                        }
-                    }
+            // --- Multi-card stack loop ---
+            // Keep stacking cards as long as the brain wants to and valid plays exist.
+            boolean keepStacking = true;
+            while (keepStacking && !sim.isGameOver()) {
+                keepStacking = false; // Will be set to true again if we successfully stack
 
-                    if (handIdx != -1) {
-                        Card card = current.getHand().get(handIdx);
-                        // Is it a valid sequence?
-                        Card top = current.getTopStack();
-                        boolean valid = false;
-                        if (top == null) {
-                            valid = (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER);
-                        } else {
-                            valid = isSequenceValid(current, top, card);
-                        }
+                // Re-run brain with fresh inputs after each card placed
+                final List<Double> freshInputs = AiInputMapper.extractInputs(sim, current);
+                final List<Double> freshOutputs = playerBrains[playerIdx].feedForward(freshInputs);
+                inputs = freshInputs;
+                outputs = freshOutputs;
+                List<Integer> freshActions = new ArrayList<>();
+                for (int i = 0; i < freshOutputs.size(); i++) freshActions.add(i);
+                freshActions.sort((a, b) -> Double.compare(freshOutputs.get(b), freshOutputs.get(a)));
 
-                        if (valid) {
-                            // Capture distance BEFORE playing the card
-                            double distBefore = AiInputMapper.getDistanceToAce(current);
-
-                            // Play it!
-                            current.getHand().remove(handIdx);
-                            current.getStack().add(card);
-                            sim.setHasPlayedToStack(true);
-                            acted = true;
-                            chosenActionIndex = action;
-
-                            // Handle Joker stack value (auto-pick)
-                            if (card.getRank() == Card.Rank.JOKER) {
-                                Card below = current.getStack().size() >= 2
-                                        ? current.getStack().get(current.getStack().size() - 2)
-                                        : null;
-                                if (below != null) {
-                                    int ord = below.getRank().ordinal();
-                                    if (ord < Card.Rank.values().length - 1) {
-                                        current.setJokerStackValue(Card.Rank.values()[ord + 1]);
-                                    } else {
-                                        current.setJokerStackValue(Card.Rank.SEVEN);
-                                    }
-                                }
-                            }
-
-                            // --- Immediate stack-progress reward ---
-                            // Reward the network every time it plays a card to its
-                            // own stack that moves it closer to Ace.
-                            double distAfterStack = AiInputMapper.getDistanceToAce(current);
-                            double stackImprovement = distBefore - distAfterStack; // Positive = got closer
-                            if (stackImprovement > 0) {
-                                // Scale: small progress ~0.2, big leap ~5.0
-                                // Extra bonus when very close to Ace (dist <= 2)
-                                double stackReward = 0.5 * stackImprovement;
-                                if (distAfterStack <= 2) {
-                                    stackReward *= 2.0; // Double reward for approaching the finish line
-                                }
-                                GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
-                            }
-
-                            // Check win: Ace on top of stack
-                            if (card.getRank() == Card.Rank.ACE) {
-                                sim.setGameOver(true);
-                                sim.setWinner(current);
-                                // Record this final winning move before we break
-                                double distNow = AiInputMapper.getDistanceToAce(current);
-                                moveHistory[playerIdx].add(new MoveRecord(inputs, chosenActionIndex, distNow));
+                for (int action : freshActions) {
+                    if (action >= 4) { // STACK Specific Card
+                        int targetCardIndex = action - 4;
+                        int handIdx = -1;
+                        for (int i = 0; i < current.getHand().size(); i++) {
+                            if (AiInputMapper.getCardIndex(current.getHand().get(i)) == targetCardIndex) {
+                                handIdx = i;
                                 break;
                             }
-                            break; // Done acting
                         }
-                    }
-                } else if (action >= 1 && action <= 3) { // DISCARD
-                    if (!sim.isHasPlayedToStack()) {
-                        int idx = findBestDiscard(current); // Keep basic heuristic for picking WHICH card to discard
-                        if (idx != -1) {
-                            Card card = current.getHand().remove(idx);
-                            current.getDiscardPile().add(card);
+
+                        if (handIdx != -1) {
+                            Card card = current.getHand().get(handIdx);
+                            Card top = current.getTopStack();
+                            boolean valid = (top == null)
+                                    ? (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER)
+                                    : isSequenceValid(current, top, card);
+
+                            if (valid) {
+                                double distBefore = AiInputMapper.getDistanceToAce(current);
+
+                                current.getHand().remove(handIdx);
+                                current.getStack().add(card);
+                                sim.setHasPlayedToStack(true);
+                                acted = true;
+                                chosenActionIndex = action;
+
+                                // Joker auto-pick
+                                if (card.getRank() == Card.Rank.JOKER) {
+                                    Card below = current.getStack().size() >= 2
+                                            ? current.getStack().get(current.getStack().size() - 2) : null;
+                                    if (below != null) {
+                                        int ord = below.getRank().ordinal();
+                                        current.setJokerStackValue(ord < Card.Rank.values().length - 1
+                                                ? Card.Rank.values()[ord + 1] : Card.Rank.SEVEN);
+                                    }
+                                }
+
+                                // Immediate stack-progress reward
+                                double distAfterStack = AiInputMapper.getDistanceToAce(current);
+                                double stackImprovement = distBefore - distAfterStack;
+                                if (stackImprovement > 0) {
+                                    double stackReward = 0.5 * stackImprovement;
+                                    if (distAfterStack <= 2) stackReward *= 2.0;
+                                    GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
+                                }
+
+                                // Win check
+                                if (card.getRank() == Card.Rank.ACE) {
+                                    sim.setGameOver(true);
+                                    sim.setWinner(current);
+                                    double distNow = AiInputMapper.getDistanceToAce(current);
+                                    moveHistory[playerIdx].add(new MoveRecord(inputs, chosenActionIndex, distNow));
+                                }
+
+                                keepStacking = !sim.isGameOver(); // Continue stacking if game not over
+                                break; // re-enter while loop
+                            }
+                        }
+                    } else if (action >= 1 && action <= 3) { // DISCARD
+                        if (!sim.isHasPlayedToStack()) {
+                            int idx = findBestDiscard(current);
+                            if (idx != -1) {
+                                Card card = current.getHand().remove(idx);
+                                current.getDiscardPile().add(card);
+                                acted = true;
+                                chosenActionIndex = action;
+                                applySimpleEffect(sim, current, card);
+                            }
+                        }
+                        break; // Discard ends the action phase
+                    } else if (action == 0) { // PASS
+                        if (sim.isHasPlayedToStack()) {
                             acted = true;
                             chosenActionIndex = action;
-                            // Skip effect resolution for simplicity — just apply instant effects
-                            applySimpleEffect(sim, current, card);
-                            break; // Done acting
                         }
-                    }
-                } else if (action == 0) { // PASS
-                    if (sim.isHasPlayedToStack()) {
-                        acted = true;
-                        chosenActionIndex = action;
-                        break;
+                        break; // Pass ends the action phase
                     }
                 }
             }
@@ -605,99 +598,96 @@ public class BackgroundTrainer {
             List<Double> inputs = AiInputMapper.extractInputs(sim, solo);
             List<Double> outputs = soloBrain.feedForward(inputs);
 
-            // Sort actions by AI confidence
-            List<Integer> sortedActions = new ArrayList<>();
-            for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
-            sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
-
-            // 3. Execute action — only stack and pass/discard, no opponent effects
+            // 3. Execute action — multi-card stack loop, then discard/pass
             boolean acted = false;
             int chosenActionIndex = 0;
 
-            for (int action : sortedActions) {
-                if (action >= 4) { // STACK Specific Card
-                    int targetCardIndex = action - 4;
-                    int handIdx = -1;
-                    for (int i = 0; i < solo.getHand().size(); i++) {
-                        if (AiInputMapper.getCardIndex(solo.getHand().get(i)) == targetCardIndex) {
-                            handIdx = i;
-                            break;
-                        }
-                    }
+            // Keep stacking cards as long as the brain chooses to and valid plays remain
+            boolean keepStacking = true;
+            while (keepStacking && !reachedAce) {
+                keepStacking = false;
 
-                    if (handIdx != -1) {
-                        Card card = solo.getHand().get(handIdx);
-                        Card top = solo.getTopStack();
-                        boolean valid = false;
-                        if (top == null) {
-                            valid = (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER);
-                        } else {
-                            valid = isSequenceValid(solo, top, card);
-                        }
+                final List<Double> freshInputs = AiInputMapper.extractInputs(sim, solo);
+                final List<Double> freshOutputs = soloBrain.feedForward(freshInputs);
+                inputs = freshInputs;
+                outputs = freshOutputs;
+                List<Integer> freshActions = new ArrayList<>();
+                for (int i = 0; i < freshOutputs.size(); i++) freshActions.add(i);
+                freshActions.sort((a, b) -> Double.compare(freshOutputs.get(b), freshOutputs.get(a)));
 
-                        if (valid) {
-                            double distBefore = AiInputMapper.getDistanceToAce(solo);
-
-                            // Play it!
-                            solo.getHand().remove(handIdx);
-                            solo.getStack().add(card);
-                            sim.setHasPlayedToStack(true);
-                            acted = true;
-                            chosenActionIndex = action;
-
-                            // Handle Joker stack value (auto-pick)
-                            if (card.getRank() == Card.Rank.JOKER) {
-                                Card below = solo.getStack().size() >= 2
-                                        ? solo.getStack().get(solo.getStack().size() - 2)
-                                        : null;
-                                if (below != null) {
-                                    int ord = below.getRank().ordinal();
-                                    if (ord < Card.Rank.values().length - 1) {
-                                        solo.setJokerStackValue(Card.Rank.values()[ord + 1]);
-                                    } else {
-                                        solo.setJokerStackValue(Card.Rank.SEVEN);
-                                    }
-                                }
-                            }
-
-                            // --- Immediate stack-progress reward (same as normal) ---
-                            double distAfterStack = AiInputMapper.getDistanceToAce(solo);
-                            double stackImprovement = distBefore - distAfterStack;
-                            if (stackImprovement > 0) {
-                                double stackReward = 0.5 * stackImprovement;
-                                if (distAfterStack <= 2) {
-                                    stackReward *= 2.0;
-                                }
-                                GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
-                            }
-
-                            // Check win: Ace on top of stack
-                            if (card.getRank() == Card.Rank.ACE) {
-                                reachedAce = true;
-                                double distNow = AiInputMapper.getDistanceToAce(solo);
-                                moveHistory.add(new MoveRecord(inputs, chosenActionIndex, distNow));
+                for (int action : freshActions) {
+                    if (action >= 4) { // STACK Specific Card
+                        int targetCardIndex = action - 4;
+                        int handIdx = -1;
+                        for (int i = 0; i < solo.getHand().size(); i++) {
+                            if (AiInputMapper.getCardIndex(solo.getHand().get(i)) == targetCardIndex) {
+                                handIdx = i;
                                 break;
                             }
-                            break; // Done acting
                         }
-                    }
-                } else if (action >= 1 && action <= 3) { // DISCARD (no opponent effects in solo)
-                    if (!sim.isHasPlayedToStack()) {
-                        int idx = findBestDiscard(solo);
-                        if (idx != -1) {
-                            Card card = solo.getHand().remove(idx);
-                            solo.getDiscardPile().add(card);
+
+                        if (handIdx != -1) {
+                            Card card = solo.getHand().get(handIdx);
+                            Card top = solo.getTopStack();
+                            boolean valid = (top == null)
+                                    ? (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER)
+                                    : isSequenceValid(solo, top, card);
+
+                            if (valid) {
+                                double distBefore = AiInputMapper.getDistanceToAce(solo);
+
+                                solo.getHand().remove(handIdx);
+                                solo.getStack().add(card);
+                                sim.setHasPlayedToStack(true);
+                                acted = true;
+                                chosenActionIndex = action;
+
+                                // Joker auto-pick
+                                if (card.getRank() == Card.Rank.JOKER) {
+                                    Card below = solo.getStack().size() >= 2
+                                            ? solo.getStack().get(solo.getStack().size() - 2) : null;
+                                    if (below != null) {
+                                        int ord = below.getRank().ordinal();
+                                        solo.setJokerStackValue(ord < Card.Rank.values().length - 1
+                                                ? Card.Rank.values()[ord + 1] : Card.Rank.SEVEN);
+                                    }
+                                }
+
+                                double distAfterStack = AiInputMapper.getDistanceToAce(solo);
+                                double stackImprovement = distBefore - distAfterStack;
+                                if (stackImprovement > 0) {
+                                    double stackReward = 0.5 * stackImprovement;
+                                    if (distAfterStack <= 2) stackReward *= 2.0;
+                                    GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
+                                }
+
+                                if (card.getRank() == Card.Rank.ACE) {
+                                    reachedAce = true;
+                                    double distNow = AiInputMapper.getDistanceToAce(solo);
+                                    moveHistory.add(new MoveRecord(inputs, chosenActionIndex, distNow));
+                                } else {
+                                    keepStacking = true; // Try to stack another card
+                                }
+                                break;
+                            }
+                        }
+                    } else if (action >= 1 && action <= 3) { // DISCARD
+                        if (!sim.isHasPlayedToStack()) {
+                            int idx = findBestDiscard(solo);
+                            if (idx != -1) {
+                                Card card = solo.getHand().remove(idx);
+                                solo.getDiscardPile().add(card);
+                                acted = true;
+                                chosenActionIndex = action;
+                                applySoloEffect(sim, solo, card);
+                            }
+                        }
+                        break;
+                    } else if (action == 0) { // PASS
+                        if (sim.isHasPlayedToStack()) {
                             acted = true;
                             chosenActionIndex = action;
-                            // In solo mode, only apply self-targeting effects (draw cards)
-                            applySoloEffect(sim, solo, card);
-                            break;
                         }
-                    }
-                } else if (action == 0) { // PASS
-                    if (sim.isHasPlayedToStack()) {
-                        acted = true;
-                        chosenActionIndex = action;
                         break;
                     }
                 }
@@ -862,94 +852,90 @@ public class BackgroundTrainer {
             List<Double> inputs = AiInputMapper.extractInputs(sim, solo);
             List<Double> outputs = brain.feedForward(inputs);
 
-            // Sort by confidence — highest first
-            List<Integer> sortedActions = new ArrayList<>();
-            for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
-            sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
-
-            // 3. Try to execute a stack action — ignore discards/pass on purpose.
-            //    We still need to discard eventually or the hand bloats, but we do it
-            //    silently with no training signal — the network gets ZERO credit for it.
+            // 3. Keep stacking cards as long as the brain picks stack actions and valid plays exist.
+            //    Discards/pass receive ZERO training signal — pure stack focus.
             boolean stackedThisTurn = false;
             int chosenActionIndex = 0;
-            double distBefore = AiInputMapper.getDistanceToAce(solo);
 
-            for (int action : sortedActions) {
-                if (action >= 4) { // STACK Specific Card
-                    int targetCardIndex = action - 4;
-                    int handIdx = -1;
-                    for (int i = 0; i < solo.getHand().size(); i++) {
-                        if (AiInputMapper.getCardIndex(solo.getHand().get(i)) == targetCardIndex) {
-                            handIdx = i;
-                            break;
+            boolean keepStacking = true;
+            while (keepStacking && !reachedAce) {
+                keepStacking = false;
+
+                // Re-run brain with fresh state after each card placed
+                final List<Double> freshInputs = AiInputMapper.extractInputs(sim, solo);
+                final List<Double> freshOutputs = brain.feedForward(freshInputs);
+                inputs = freshInputs;
+                outputs = freshOutputs;
+                List<Integer> freshActions = new ArrayList<>();
+                for (int i = 0; i < freshOutputs.size(); i++) freshActions.add(i);
+                freshActions.sort((a, b) -> Double.compare(freshOutputs.get(b), freshOutputs.get(a)));
+
+                for (int action : freshActions) {
+                    if (action >= 4) { // STACK Specific Card
+                        int targetCardIndex = action - 4;
+                        int handIdx = -1;
+                        for (int i = 0; i < solo.getHand().size(); i++) {
+                            if (AiInputMapper.getCardIndex(solo.getHand().get(i)) == targetCardIndex) {
+                                handIdx = i;
+                                break;
+                            }
                         }
-                    }
-                    if (handIdx == -1) continue;
+                        if (handIdx == -1) continue;
 
-                    Card card = solo.getHand().get(handIdx);
-                    Card top = solo.getTopStack();
-                    boolean valid = (top == null)
-                            ? (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER)
-                            : isSequenceValid(solo, top, card);
+                        Card card = solo.getHand().get(handIdx);
+                        Card top = solo.getTopStack();
+                        boolean valid = (top == null)
+                                ? (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER)
+                                : isSequenceValid(solo, top, card);
+                        if (!valid) continue;
 
-                    if (!valid) continue;
+                        double distBefore = AiInputMapper.getDistanceToAce(solo);
 
-                    // Play the card
-                    solo.getHand().remove(handIdx);
-                    solo.getStack().add(card);
-                    sim.setHasPlayedToStack(true);
-                    stackedThisTurn = true;
-                    chosenActionIndex = action;
+                        solo.getHand().remove(handIdx);
+                        solo.getStack().add(card);
+                        sim.setHasPlayedToStack(true);
+                        stackedThisTurn = true;
+                        chosenActionIndex = action;
 
-                    // Joker stack value (auto-pick, same as solo game)
-                    if (card.getRank() == Card.Rank.JOKER) {
-                        Card below = solo.getStack().size() >= 2
-                                ? solo.getStack().get(solo.getStack().size() - 2) : null;
-                        if (below != null) {
-                            int ord = below.getRank().ordinal();
-                            solo.setJokerStackValue(
-                                    ord < Card.Rank.values().length - 1
-                                            ? Card.Rank.values()[ord + 1]
-                                            : Card.Rank.SEVEN);
-                        }
-                    }
-
-                    double distAfter = AiInputMapper.getDistanceToAce(solo);
-                    double improvement = distBefore - distAfter; // positive = closer to Ace
-
-                    if (improvement > 0) {
-                        // ---- HEAVY REWARD ----
-                        // Base: 3x the raw improvement (so a 1-step improvement = 3.0, a 5-step = 15.0)
-                        double stackReward = Math.min(3.0 * improvement, 15.0);
-
-                        // Proximity multipliers — approaching the finish line matters most
-                        if (distAfter <= 1) {
-                            stackReward *= 3.0; // Three steps from Ace — massive bonus
-                        } else if (distAfter <= 3) {
-                            stackReward *= 2.0; // Close to Ace — double bonus
+                        // Joker auto-pick
+                        if (card.getRank() == Card.Rank.JOKER) {
+                            Card below = solo.getStack().size() >= 2
+                                    ? solo.getStack().get(solo.getStack().size() - 2) : null;
+                            if (below != null) {
+                                int ord = below.getRank().ordinal();
+                                solo.setJokerStackValue(ord < Card.Rank.values().length - 1
+                                        ? Card.Rank.values()[ord + 1] : Card.Rank.SEVEN);
+                            }
                         }
 
-                        GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
-                    }
-                    // If improvement == 0, no signal (shouldn't normally happen for a valid stack move)
+                        double distAfter = AiInputMapper.getDistanceToAce(solo);
+                        double improvement = distBefore - distAfter;
 
-                    // Check win
-                    if (card.getRank() == Card.Rank.ACE) {
-                        reachedAce = true;
-                        // Immediate win bonus BEFORE trajectory replay
-                        GlobalAi.trainSafe(inputs, chosenActionIndex, 50.0);
-                        moveHistory.add(new MoveRecord(inputs, chosenActionIndex, 0.0));
+                        if (improvement > 0) {
+                            double stackReward = Math.min(3.0 * improvement, 15.0);
+                            if (distAfter <= 1) stackReward *= 3.0;
+                            else if (distAfter <= 3) stackReward *= 2.0;
+                            GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
+                        }
+
+                        if (card.getRank() == Card.Rank.ACE) {
+                            reachedAce = true;
+                            GlobalAi.trainSafe(inputs, chosenActionIndex, 50.0);
+                            moveHistory.add(new MoveRecord(inputs, chosenActionIndex, 0.0));
+                        } else {
+                            keepStacking = true; // Try to chain another card
+                        }
                         break;
                     }
-                    break; // Done with action selection
+                    // Discard/pass: break without training — intentionally silent
+                    break;
                 }
-                // For discard / pass actions: break without training — intentionally silent
-                break;
             }
 
             if (reachedAce) break;
 
             // Fallback: if couldn't stack, silently discard the worst card (no training signal)
+
             if (!stackedThisTurn && !solo.getHand().isEmpty()) {
                 int idx = findBestDiscard(solo);
                 if (idx != -1) {

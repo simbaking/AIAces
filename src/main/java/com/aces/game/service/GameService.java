@@ -1234,75 +1234,82 @@ public class GameService {
         List<Double> inputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, cpu);
         List<Double> outputs = com.aces.game.ai.GlobalAi.getInstance().feedForward(inputs);
 
-        // Sort actions by AI confidence
-        List<Integer> sortedActions = new ArrayList<>();
-        for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
-        sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
-
         /* ACTIONS: 0: PASS, 1: D-SKIP, 2: D-ATK, 3: D-NRM, 4-57: STACK Specific Card */
         boolean acted = false;
 
-        for (int action : sortedActions) {
-            if (action >= 4) { // PLAY STACK Specific Card
-                int targetCardIndex = action - 4;
-                // Does the player have this exact card?
-                int handIdx = -1;
-                for (int i = 0; i < cpu.getHand().size(); i++) {
-                    if (com.aces.game.ai.AiInputMapper.getCardIndex(cpu.getHand().get(i)) == targetCardIndex) {
-                        handIdx = i;
-                        break;
-                    }
-                }
+        // --- Multi-card stack loop ---
+        // Keep stacking as long as the brain picks stack actions and valid plays remain.
+        boolean keepStacking = true;
+        while (keepStacking && !defaultGame.isGameOver()) {
+            keepStacking = false;
 
-                if (handIdx != -1) {
-                    Card card = cpu.getHand().get(handIdx);
-                    // Is it a valid sequence?
-                    Card top = cpu.getTopStack();
-                    boolean valid = false;
-                    if (top == null) {
-                        valid = (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER);
-                    } else {
-                        valid = isSequenceValid(cpu, top, card);
-                    }
+            // Re-run brain with updated state after each card placed
+            final List<Double> freshInputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, cpu);
+            final List<Double> freshOutputs = com.aces.game.ai.GlobalAi.getInstance().feedForward(freshInputs);
+            inputs = freshInputs;
+            outputs = freshOutputs;
+            List<Integer> freshActions = new ArrayList<>();
+            for (int i = 0; i < freshOutputs.size(); i++) freshActions.add(i);
+            freshActions.sort((a, b) -> Double.compare(freshOutputs.get(b), freshOutputs.get(a)));
 
-                    if (valid) {
-                        // Play it!
-                        playToStack(cpu.getId(), handIdx);
-                        acted = true;
-                        cpuDelay(delayMs); // Delay after stacking
-                        if (defaultGame.isGameOver()) return;
-                        defaultGame.setCpuTurnPending(true);
-                        break; // Done acting
-                    }
-                }
-            } else if (action >= 1 && action <= 3) { // DISCARD (1: SKIP, 2: ATTACK, 3: NORMAL)
-                if (defaultGame.isHasPlayedToStack()) {
-                    // Must Pass
-                } else {
-                    String cat = (action == 1) ? "SKIP" : (action == 2) ? "ATTACK" : "NORMAL";
-                    int idx = findBestDiscard(cpu, cat);
-                    if (idx == -1 && !cat.equals("NORMAL"))
-                        idx = findBestDiscard(cpu, "NORMAL");
-
-                    if (idx != -1) {
-                        discardAndEffect(cpu.getId(), idx);
-                        acted = true;
-                        // If there are effects to resolve, return and let next cpu-step handle them
-                        if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
-                            defaultGame.setCpuTurnPending(true);
-                        } else if (!defaultGame.getCurrentPlayer().isPc()) {
-                            defaultGame.setCpuTurnPending(true);
-                        } else {
-                            defaultGame.setCpuTurnPending(false);
+            for (int action : freshActions) {
+                if (action >= 4) { // PLAY STACK Specific Card
+                    int targetCardIndex = action - 4;
+                    int handIdx = -1;
+                    for (int i = 0; i < cpu.getHand().size(); i++) {
+                        if (com.aces.game.ai.AiInputMapper.getCardIndex(cpu.getHand().get(i)) == targetCardIndex) {
+                            handIdx = i;
+                            break;
                         }
-                        break; // Done acting
                     }
-                }
-            } else if (action == 0) { // PASS
-                if (defaultGame.isHasPlayedToStack()) {
-                    acted = true;
-                    skipTurn(cpu.getId());
-                    break;
+
+                    if (handIdx != -1) {
+                        Card card = cpu.getHand().get(handIdx);
+                        Card top = cpu.getTopStack();
+                        boolean valid = (top == null)
+                                ? (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER)
+                                : isSequenceValid(cpu, top, card);
+
+                        if (valid) {
+                            playToStack(cpu.getId(), handIdx);
+                            acted = true;
+                            cpuDelay(delayMs / 2); // Shorter delay between chained cards
+                            if (defaultGame.isGameOver()) return;
+                            // If Joker was played, a JOKER_STACK_VALUE effect is pending — let it resolve first
+                            if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+                                defaultGame.setCpuTurnPending(true);
+                                return;
+                            }
+                            keepStacking = true; // Try to stack another card
+                            break;
+                        }
+                    }
+                } else if (action >= 1 && action <= 3) { // DISCARD (1: SKIP, 2: ATTACK, 3: NORMAL)
+                    if (!defaultGame.isHasPlayedToStack()) {
+                        String cat = (action == 1) ? "SKIP" : (action == 2) ? "ATTACK" : "NORMAL";
+                        int idx = findBestDiscard(cpu, cat);
+                        if (idx == -1 && !cat.equals("NORMAL"))
+                            idx = findBestDiscard(cpu, "NORMAL");
+
+                        if (idx != -1) {
+                            discardAndEffect(cpu.getId(), idx);
+                            acted = true;
+                            if (defaultGame.getEffectState() != GameState.EffectState.NONE) {
+                                defaultGame.setCpuTurnPending(true);
+                            } else if (!defaultGame.getCurrentPlayer().isPc()) {
+                                defaultGame.setCpuTurnPending(true);
+                            } else {
+                                defaultGame.setCpuTurnPending(false);
+                            }
+                        }
+                    }
+                    break; // Discard ends the action phase — no stacking after
+                } else if (action == 0) { // PASS
+                    if (defaultGame.isHasPlayedToStack()) {
+                        acted = true;
+                        skipTurn(cpu.getId());
+                    }
+                    break; // Pass ends the action phase
                 }
             }
         }
