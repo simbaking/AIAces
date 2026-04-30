@@ -24,10 +24,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  *      the player has moved toward Ace compared to a 10-move rolling average from previous turns, and trains immediately.
  *   2) End-of-game trajectory replay: after the game finishes, replays ALL recorded
  *      moves and trains with decaying win/loss rewards (recent moves weighted more).
- *
- * Training modes (see {@link TrainingMode}):
- *   STANDARD    – original balanced multi-player + solo batch training.
- *   STACK_FOCUS – exclusively rewards stack cards that approach Ace (very heavy signal).
  */
 @Service
 public class BackgroundTrainer {
@@ -42,9 +38,6 @@ public class BackgroundTrainer {
     private final AtomicInteger gamesPlayed = new AtomicInteger(0);
     private final AtomicInteger gameCounter = new AtomicInteger(0); // Tracks 0,1,2 cycle for solo games
     private static final int MAX_TURNS_PER_GAME = 500; // Safety limit
-
-    /** Current active training mode — can be switched at runtime. */
-    private volatile TrainingMode currentMode = TrainingMode.STACK_FOCUS;
 
     // --- Solo batch tracking ---
     private static final int SOLO_BATCH_SIZE = 20; // Games per solo batch
@@ -69,7 +62,7 @@ public class BackgroundTrainer {
 
     public void start() {
         if (running.compareAndSet(false, true)) {
-            System.out.println("BackgroundTrainer: Starting self-play training (mode=" + currentMode + ")...");
+            System.out.println("BackgroundTrainer: Starting self-play training...");
             gamesPlayed.set(0);
             executor.submit(this::trainingLoop);
         }
@@ -89,48 +82,20 @@ public class BackgroundTrainer {
         return gamesPlayed.get();
     }
 
-    public TrainingMode getTrainingMode() {
-        return currentMode;
-    }
-
-    /**
-     * Switch training mode at runtime. Takes effect on the next game iteration.
-     * Switching to STACK_FOCUS resets the solo-batch counters so the new mode
-     * starts with a clean slate.
-     */
-    public void setTrainingMode(TrainingMode mode) {
-        if (this.currentMode != mode) {
-            this.currentMode = mode;
-            // Reset batch state so we don't carry stale counters across modes
-            soloBatchCount = 0;
-            soloBatchTotalMoves = 0;
-            soloBatchAceCount = 0;
-            batchSnapshot = null;
-            bestAverageMovesToAce = Double.MAX_VALUE;
-            System.out.println("BackgroundTrainer: Training mode switched to " + mode);
-        }
-    }
-
     private void trainingLoop() {
         while (running.get()) {
             try {
-                if (currentMode == TrainingMode.STACK_FOCUS) {
-                    // In STACK_FOCUS mode every single game is a stack-focused solo game.
-                    // No multiplayer games, no solo-batch amplification — pure stack reward signal.
-                    playStackFocusedGame();
+                // Every 3rd game (index 2 in 0,1,2 cycle) is a solo one-player game
+                int cycle = gameCounter.getAndIncrement() % 3;
+                if (cycle == 2) {
+                    runSoloBatchGame();
                 } else {
-                    // STANDARD mode: every 3rd game (index 2 in 0,1,2 cycle) is a solo batch game
-                    int cycle = gameCounter.getAndIncrement() % 3;
-                    if (cycle == 2) {
-                        runSoloBatchGame();
-                    } else {
-                        playOneGame();
-                    }
+                    playOneGame();
                 }
                 gamesPlayed.incrementAndGet();
 
                 if (gamesPlayed.get() % 50 == 0) {
-                    System.out.println("BackgroundTrainer [" + currentMode + "]: " + gamesPlayed.get() + " games completed.");
+                    System.out.println("BackgroundTrainer: " + gamesPlayed.get() + " games completed.");
                     // Brief pause every 50 games to reduce CPU pressure
                     Thread.sleep(100);
                     // Periodically persist the brain to disk
@@ -790,213 +755,6 @@ public class BackgroundTrainer {
 
         // Return moves count (positive if reached Ace, -1 if not)
         return reachedAce ? totalMoves : -1;
-    }
-
-    // =========================================================================
-    // STACK FOCUS TRAINING MODE
-    // =========================================================================
-    /**
-     * Plays one solo game that ONLY and HEAVILY rewards placing cards onto the
-     * player's own stack that reduce distance to Ace. All other signals
-     * (discard rewards, opponent penalties, neutral progress rewards) are
-     * stripped out so the network gets an extremely clean gradient:
-     *   "stack a card that moves you closer → big reward, everything else → nothing".
-     *
-     * Reward structure:
-     *   Stack card that brings dist closer:  base 3.0 * improvement (min 3.0, max 15.0)
-     *                                        ×2 bonus when dist <= 3 (approaching finish)
-     *                                        ×3 bonus when dist <= 1 (one step from Ace)
-     *   Winning (Ace on top of stack):       immediate +50, then full trajectory replay
-     *                                        with rewards from 10.0 (oldest) to 30.0 (newest)
-     *   Stacking a card with no improvement: 0
-     *   Discard / Pass:                      0  (no signal — we don't care about these)
-     *   Did NOT reach Ace by turn limit:     mild trajectory penalty (-0.2 to -1.0)
-     *
-     * This gives the network a very strong, noise-free signal to learn that
-     * "putting the right card on my stack" is the most important thing.
-     */
-    @SuppressWarnings("unchecked")
-    private void playStackFocusedGame() {
-        // --- Setup (identical to solo game) ---
-        GameState sim = new GameState();
-        sim.setPhase(GameState.Phase.PLAYING);
-        initDeck(sim);
-
-        sim.getPlayers().add(new Player("sf", "SF", false));
-        Player solo = sim.getPlayers().get(0);
-
-        // Deal starting stack card (no Aces/Jokers)
-        if (!sim.getDrawPile().isEmpty()) {
-            Card startCard = sim.getDrawPile().pop();
-            while ((startCard.getRank() == Card.Rank.ACE || startCard.getRank() == Card.Rank.JOKER)
-                    && !sim.getDrawPile().isEmpty()) {
-                sim.getDrawPile().add(0, startCard);
-                startCard = sim.getDrawPile().pop();
-            }
-            solo.getStack().add(startCard);
-        }
-
-        // Fork a lightly mutated brain — enough to explore without drowning the signal
-        NeuralNetwork brain;
-        synchronized (GlobalAi.getInstance()) {
-            brain = GlobalAi.getInstance().deepCopy();
-            brain.mutate(0.10, 0.05); // Small mutation so we still explore
-        }
-
-        List<MoveRecord> moveHistory = new ArrayList<>();
-        int turnCount = 0;
-        boolean reachedAce = false;
-
-        // --- Game loop ---
-        while (turnCount < MAX_TURNS_PER_GAME && running.get()) {
-            turnCount++;
-
-            // 1. Draw
-            if (sim.getDrawPile().isEmpty()) reshuffleDeck(sim);
-            if (sim.getDrawPile().isEmpty()) break;
-            Card drawn = sim.getDrawPile().pop();
-            solo.getHand().add(drawn);
-            sim.setHasDrawn(true);
-
-            // 2. Brain decision
-            List<Double> inputs = AiInputMapper.extractInputs(sim, solo);
-            List<Double> outputs = brain.feedForward(inputs);
-
-            // Sort by confidence — highest first
-            List<Integer> sortedActions = new ArrayList<>();
-            for (int i = 0; i < outputs.size(); i++) sortedActions.add(i);
-            sortedActions.sort((a, b) -> Double.compare(outputs.get(b), outputs.get(a)));
-
-            // 3. Try to execute a stack action — ignore discards/pass on purpose.
-            //    We still need to discard eventually or the hand bloats, but we do it
-            //    silently with no training signal — the network gets ZERO credit for it.
-            boolean stackedThisTurn = false;
-            int chosenActionIndex = 0;
-            double distBefore = AiInputMapper.getDistanceToAce(solo);
-
-            for (int action : sortedActions) {
-                if (action >= 4) { // STACK Specific Card
-                    int targetCardIndex = action - 4;
-                    int handIdx = -1;
-                    for (int i = 0; i < solo.getHand().size(); i++) {
-                        if (AiInputMapper.getCardIndex(solo.getHand().get(i)) == targetCardIndex) {
-                            handIdx = i;
-                            break;
-                        }
-                    }
-                    if (handIdx == -1) continue;
-
-                    Card card = solo.getHand().get(handIdx);
-                    Card top = solo.getTopStack();
-                    boolean valid = (top == null)
-                            ? (card.getRank() != Card.Rank.ACE && card.getRank() != Card.Rank.JOKER)
-                            : isSequenceValid(solo, top, card);
-
-                    if (!valid) continue;
-
-                    // Play the card
-                    solo.getHand().remove(handIdx);
-                    solo.getStack().add(card);
-                    sim.setHasPlayedToStack(true);
-                    stackedThisTurn = true;
-                    chosenActionIndex = action;
-
-                    // Joker stack value (auto-pick, same as solo game)
-                    if (card.getRank() == Card.Rank.JOKER) {
-                        Card below = solo.getStack().size() >= 2
-                                ? solo.getStack().get(solo.getStack().size() - 2) : null;
-                        if (below != null) {
-                            int ord = below.getRank().ordinal();
-                            solo.setJokerStackValue(
-                                    ord < Card.Rank.values().length - 1
-                                            ? Card.Rank.values()[ord + 1]
-                                            : Card.Rank.SEVEN);
-                        }
-                    }
-
-                    double distAfter = AiInputMapper.getDistanceToAce(solo);
-                    double improvement = distBefore - distAfter; // positive = closer to Ace
-
-                    if (improvement > 0) {
-                        // ---- HEAVY REWARD ----
-                        // Base: 3x the raw improvement (so a 1-step improvement = 3.0, a 5-step = 15.0)
-                        double stackReward = Math.min(3.0 * improvement, 15.0);
-
-                        // Proximity multipliers — approaching the finish line matters most
-                        if (distAfter <= 1) {
-                            stackReward *= 3.0; // Three steps from Ace — massive bonus
-                        } else if (distAfter <= 3) {
-                            stackReward *= 2.0; // Close to Ace — double bonus
-                        }
-
-                        GlobalAi.trainSafe(inputs, chosenActionIndex, stackReward);
-                    }
-                    // If improvement == 0, no signal (shouldn't normally happen for a valid stack move)
-
-                    // Check win
-                    if (card.getRank() == Card.Rank.ACE) {
-                        reachedAce = true;
-                        // Immediate win bonus BEFORE trajectory replay
-                        GlobalAi.trainSafe(inputs, chosenActionIndex, 50.0);
-                        moveHistory.add(new MoveRecord(inputs, chosenActionIndex, 0.0));
-                        break;
-                    }
-                    break; // Done with action selection
-                }
-                // For discard / pass actions: break without training — intentionally silent
-                break;
-            }
-
-            if (reachedAce) break;
-
-            // Fallback: if couldn't stack, silently discard the worst card (no training signal)
-            if (!stackedThisTurn && !solo.getHand().isEmpty()) {
-                int idx = findBestDiscard(solo);
-                if (idx != -1) {
-                    Card card = solo.getHand().remove(idx);
-                    solo.getDiscardPile().add(card);
-                    applySoloEffect(sim, solo, card);
-                }
-            }
-
-            // Record move for trajectory replay (even non-stack moves)
-            double distNow = AiInputMapper.getDistanceToAce(solo);
-            moveHistory.add(new MoveRecord(inputs, chosenActionIndex, distNow));
-
-            // Reset turn flags
-            sim.setHasDrawn(false);
-            sim.setHasPlayedToStack(false);
-        }
-
-        // --- End-of-game trajectory replay ---
-        int totalMoves = moveHistory.size();
-        if (!moveHistory.isEmpty()) {
-            synchronized (GlobalAi.getInstance()) {
-                if (reachedAce) {
-                    // Large win rewards, recency-weighted
-                    // Range: 10.0 (oldest) → 30.0 (newest)
-                    for (int m = 0; m < totalMoves; m++) {
-                        MoveRecord rec = moveHistory.get(m);
-                        double recency = (totalMoves == 1) ? 1.0
-                                : 0.3 + 0.7 * ((double) m / (totalMoves - 1));
-                        double reward = 10.0 + 20.0 * recency;
-                        GlobalAi.trainSafe(rec.inputs, rec.actionIndex, reward);
-                    }
-                    System.out.println("BackgroundTrainer [STACK_FOCUS]: WIN! Reached Ace in " + totalMoves + " moves.");
-                } else {
-                    // Did NOT reach Ace — mild penalty so the network doesn't ignore the goal
-                    for (int m = 0; m < totalMoves; m++) {
-                        MoveRecord rec = moveHistory.get(m);
-                        double recency = (totalMoves == 1) ? 1.0
-                                : 0.3 + 0.7 * ((double) m / (totalMoves - 1));
-                        double reward = -(0.2 + 0.8 * recency);
-                        GlobalAi.trainSafe(rec.inputs, rec.actionIndex, reward);
-                    }
-                }
-                // Small mutation to keep exploring
-                GlobalAi.mutateSafe(0.04, 0.015);
-            }
-        }
     }
 
     /**
