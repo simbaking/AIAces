@@ -268,20 +268,23 @@ public class GameService {
         }
 
         if (isValid) {
-            // Capture distances BEFORE placing the card on the stack
+            // Capture own distance BEFORE placing the card
             double preDistSelf = (preMoveInputs != null) ? com.aces.game.ai.AiInputMapper.getDistanceToAce(p) : 0;
-            double preDistOpp  = (preMoveInputs != null) ? getClosestOpponentDistance() : 0;
 
             p.getHand().remove(cardIndex);
             p.getStack().add(card);
             defaultGame.setHasPlayedToStack(true);
 
             if (p.isPc() && preMoveInputs != null) {
-                // Measure distance AFTER card is on stack
+                // Reward ONLY if we actually got closer to Ace
                 double postDist = com.aces.game.ai.AiInputMapper.getDistanceToAce(p);
-                int actionIndex = 4 + com.aces.game.ai.AiInputMapper.getCardIndex(card);
-                double reward = computeLiveReward(preDistSelf, postDist, preDistOpp);
-                com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, actionIndex, reward, 50.0);
+                double improvement = preDistSelf - postDist;
+                if (improvement > 0) {
+                    int actionIndex = 4 + com.aces.game.ai.AiInputMapper.getCardIndex(card);
+                    double reward = Math.min(improvement * 0.5, 3.0);
+                    if (postDist <= 2) reward *= 2.0; // Proximity bonus near Ace
+                    com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, actionIndex, reward, 50.0);
+                }
             }
 
             // If playing a Joker, need to choose what value it represents
@@ -417,24 +420,9 @@ public class GameService {
 
         if (defaultGame.isHasPlayedToStack()) {
             defaultGame.setGameMessage(p.getName() + " passed turn.");
-            if (p.isPc() && preMoveInputs != null) {
-                // Passing after a stack play is correct — mild positive if we're still ahead
-                double dist    = com.aces.game.ai.AiInputMapper.getDistanceToAce(p);
-                double oppDist = getClosestOpponentDistance();
-                double reward  = (dist < oppDist) ? 0.5 : 0.1;
-                com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, 0, reward, 50.0);
-            }
             endTurn();
         } else {
-            // Allow passing if user chooses to (e.g. stuck)
             defaultGame.setGameMessage(p.getName() + " passed turn (no play made).");
-            if (p.isPc() && preMoveInputs != null) {
-                // Passing without playing at all is generally bad — penalize unless stuck
-                double dist    = com.aces.game.ai.AiInputMapper.getDistanceToAce(p);
-                double oppDist = getClosestOpponentDistance();
-                double reward  = (dist < oppDist) ? 0.0 : -0.3;
-                com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, 0, reward, 50.0);
-            }
             endTurn();
         }
     }
@@ -474,26 +462,9 @@ public class GameService {
         if (cardIndex < 0 || cardIndex >= p.getHand().size())
             return;
 
-        List<Double> preMoveInputs = null;
-        if (p.isPc()) {
-            preMoveInputs = com.aces.game.ai.AiInputMapper.extractInputs(defaultGame, p);
-        }
-
-        // Capture distance before the discard effect resolves
-        double preDistSelf = (p.isPc() && preMoveInputs != null)
-                ? com.aces.game.ai.AiInputMapper.getDistanceToAce(p) : 0;
-        double preDistOpp  = (p.isPc() && preMoveInputs != null)
-                ? getClosestOpponentDistance() : 0;
-
+        // No training signal for discards — the network is only rewarded for
+        // getting closer to Ace via stack plays, not for card utility effects.
         Card card = p.getHand().remove(cardIndex);
-
-        if (p.isPc() && preMoveInputs != null) {
-            // Post-discard self distance (stack unchanged by discard itself)
-            double postDist = com.aces.game.ai.AiInputMapper.getDistanceToAce(p);
-            int actionIndex = getDiscardActionIndex(card);
-            double reward = computeLiveReward(preDistSelf, postDist, preDistOpp);
-            com.aces.game.ai.GlobalAi.trainSafe(preMoveInputs, actionIndex, reward, 50.0);
-        }
 
         p.getDiscardPile().add(card);
         defaultGame.getDiscardPile().add(card); // Add to global discard for reshuffling and effects
@@ -1108,28 +1079,21 @@ public class GameService {
     }
 
     /**
-     * Computes a signed reward for a live-game move from the perspective of the acting player.
+     * Computes a reward purely based on how much closer the player got to Ace.
+     * No opponent comparisons — the network is rewarded ONLY for its own progress.
      *
      * @param preDistSelf  Player's distance to Ace BEFORE the move.
      * @param postDistSelf Player's distance to Ace AFTER the move.
-     * @param preDistOpp   Closest opponent distance to Ace BEFORE the move.
-     * @return Reward signal in range roughly [-1, +3].
+     * @return Positive reward for improvement, zero otherwise.
      */
-    private double computeLiveReward(double preDistSelf, double postDistSelf, double preDistOpp) {
+    private double computeLiveReward(double preDistSelf, double postDistSelf) {
         double progress = preDistSelf - postDistSelf; // positive = got closer
-        double reward;
         if (progress > 0) {
-            reward = Math.min(progress * 0.5, 3.0);   // e.g. closing 2 steps = +1.0
-            // Boost if we're now ahead of closest opponent
-            if (postDistSelf < preDistOpp) reward *= 1.4;
-        } else if (progress == 0) {
-            // No stack change (discard, pass-after-play): mild reward only if already leading
-            reward = (postDistSelf < preDistOpp) ? 0.2 : 0.0;
-        } else {
-            // Got further away — penalise
-            reward = -0.5 * Math.abs(progress);
+            double reward = Math.min(progress * 0.5, 3.0);
+            if (postDistSelf <= 2) reward *= 2.0; // Proximity bonus near Ace
+            return reward;
         }
-        return reward;
+        return 0.0; // No reward for standing still or moving away
     }
 
     /**

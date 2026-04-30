@@ -450,41 +450,17 @@ public class BackgroundTrainer {
                 window.removeFirst();
             }
 
-            // 5. Per-move intermediate training — opponent-aware reward
+            // 5. Per-move intermediate training — pure distance-to-Ace progress only
             if (window.size() >= 2) {
-                double sum = 0;
-                for (int i = 0; i < window.size(); i++) {
-                    sum += window.get(i);
-                }
-                double avgDist = sum / window.size();
+                double avgDist = window.stream().mapToDouble(Double::doubleValue).average().orElse(distNow);
                 double progress = avgDist - distNow; // Positive = got closer to Ace
 
-                // Check opponent proximity
-                double closestOppDist = getClosestOpponentDistance(sim, playerIdx);
-                double selfLead = closestOppDist - distNow; // Positive = we're ahead
-
-                double reward;
                 if (progress > 0) {
-                    // Got closer — reward scaled by progress
-                    reward = Math.min(0.3 * progress, 3.0);
-                    // Bonus if we're ahead of the closest opponent
-                    if (selfLead > 0) reward *= 1.3;
-                    // Reduce if opponents are dangerously close to Ace
-                    if (closestOppDist <= 2 && distNow > closestOppDist) reward *= 0.5;
-                } else if (progress == 0) {
-                    // No change — only tiny reward if we're well ahead
-                    reward = (selfLead > 2) ? 0.05 : 0.0;
-                } else {
-                    // Got further away — penalize especially if opponents are close
-                    reward = (closestOppDist <= 3) ? -0.2 : 0.0;
+                    double reward = Math.min(0.3 * progress, 3.0);
+                    if (distNow <= 2) reward *= 2.0; // Proximity bonus near Ace
+                    GlobalAi.trainSafe(inputs, chosenActionIndex, reward);
                 }
-
-                // Severe penalty if our action actively made ANY opponent closer to the Ace
-                if (oppAdvancementPenalty > 0) {
-                    reward -= (oppAdvancementPenalty * 2.0);
-                }
-
-                GlobalAi.trainSafe(inputs, chosenActionIndex, reward);
+                // No reward for no change, no penalty for moving away — zero signal keeps it clean
             }
 
             // Next turn
