@@ -383,6 +383,32 @@ public class GameService {
         return sb.toString();
     }
 
+    public static boolean isValidTenTarget(List<Card> stack) {
+        if (stack == null || stack.size() < 4) return false;
+
+        boolean isAscending = true;
+        boolean isDescending = true;
+
+        int baseOrdinal = stack.get(0).getRank().ordinal();
+        
+        for (int i = 1; i < stack.size(); i++) {
+            Card c = stack.get(i);
+            if (c.getRank() == Card.Rank.JOKER) continue;
+            
+            int expectedAsc = baseOrdinal + i;
+            if (c.getRank().ordinal() != expectedAsc) {
+                isAscending = false;
+            }
+            
+            int expectedDesc = Math.floorMod(baseOrdinal - i, 13);
+            if (c.getRank().ordinal() != expectedDesc) {
+                isDescending = false;
+            }
+        }
+
+        return isAscending || isDescending;
+    }
+
     private boolean hasValidStackPlay(Player p) {
         if (p.getHand().isEmpty()) return false;
         Card top = p.getTopStack();
@@ -563,14 +589,14 @@ public class GameService {
         } else if (card.getRank() == Card.Rank.EIGHT) {
             defaultGame.setGameMessage("Select a target player.");
         } else if (card.getRank() == Card.Rank.TEN) {
-            // Check if any player has a stack with 4+ cards
+            // Check if any player has a stack with 4+ cards that is monotonic
             boolean hasValidStack = defaultGame.getPlayers().stream()
-                    .anyMatch(player -> player.getStack().size() >= 4);
+                    .anyMatch(player -> isValidTenTarget(player.getStack()));
             if (hasValidStack) {
-                defaultGame.setGameMessage("Select a target player with 4+ cards in stack.");
+                defaultGame.setGameMessage("Select a target player with a valid 4+ card stack (all ascending or descending).");
             } else {
                 // No valid stacks - effect does nothing
-                defaultGame.setGameMessage("TEN discarded but no stack has 4+ cards. Nothing happens.");
+                defaultGame.setGameMessage("TEN discarded but no stack is valid (4+ cards, ascending/descending). Nothing happens.");
                 defaultGame.setEffectState(GameState.EffectState.NONE);
                 endTurn();
             }
@@ -966,8 +992,8 @@ public class GameService {
                     }
                 }
                 break;
-            case TEN: // Take top 3 from stack (if 4+ cards)
-                if (target.getStack().size() >= 4) {
+            case TEN: // Take top 3 from stack (if 4+ cards and monotonic)
+                if (isValidTenTarget(target.getStack())) {
                     // Take top 3 cards from target's stack
                     List<Card> taken = new ArrayList<>();
                     for (int i = 0; i < 3; i++) {
@@ -977,7 +1003,7 @@ public class GameService {
                     source.getHand().addAll(taken);
                     defaultGame.setGameMessage("TEN! Took 3 cards from " + target.getName() + "'s stack!");
                 } else {
-                    defaultGame.setGameMessage(target.getName() + "'s stack needs 4+ cards!");
+                    defaultGame.setGameMessage(target.getName() + "'s stack must be 4+ cards and strictly ascending or descending!");
                 }
                 defaultGame.setEffectState(GameState.EffectState.NONE);
                 break;

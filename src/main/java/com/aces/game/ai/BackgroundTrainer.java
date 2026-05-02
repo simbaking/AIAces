@@ -1271,13 +1271,14 @@ public class BackgroundTrainer {
         return best;
     }
 
-    /** Opponent whose stack top is closest to Ace (most advanced). */
+    /** Opponent whose stack top is closest to Ace (most advanced) AND is valid for TEN. */
     private Player getMostAdvancedOpponent(GameState sim, Player self) {
         Player best = null;
         double minDist = Double.MAX_VALUE;
         for (Player p : sim.getPlayers()) {
             if (p == self) continue;
-            if (p.getStack().size() < 4) continue; // TEN needs 4+ cards
+            // TEN needs 4+ cards AND strictly ascending or descending stack
+            if (!com.aces.game.service.GameService.isValidTenTarget(p.getStack())) continue; 
             double d = AiInputMapper.getDistanceToAce(p);
             if (d < minDist) { minDist = d; best = p; }
         }
