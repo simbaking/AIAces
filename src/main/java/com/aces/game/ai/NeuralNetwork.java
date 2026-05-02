@@ -220,9 +220,10 @@ public class NeuralNetwork {
         double error = reward - output;
         double delta = error * output * (1 - output);
 
-        double learningRate = 0.2 * weightMultiplier;
+        // Adam optimizer converges much faster, so we use a lower base learning rate
+        double learningRate = 0.05 * weightMultiplier;
 
-        actionNode.adjustWeights(inputToLast, delta, learningRate);
+        actionNode.adjustWeightsAdam(inputToLast, delta, learningRate);
     }
 
     public void train(List<Double> inputs, int actionIndex, double reward) {

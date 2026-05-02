@@ -9,6 +9,13 @@ public class Neuron {
     private List<Double> weights;
     private double bias;
 
+    // Adam Optimizer State (transient so it doesn't serialize and bloat the file)
+    private transient List<Double> mWeights;
+    private transient List<Double> vWeights;
+    private transient double mBias = 0;
+    private transient double vBias = 0;
+    private transient int t = 0;
+
     public Neuron() {
     } // Default for serialization
 
@@ -60,5 +67,41 @@ public class Neuron {
             weights.set(i, weights.get(i) + change);
         }
         this.bias += delta * learningRate;
+    }
+
+    public void adjustWeightsAdam(List<Double> inputs, double delta, double baseLearningRate) {
+        if (mWeights == null) {
+            mWeights = new ArrayList<>(java.util.Collections.nCopies(weights.size(), 0.0));
+            vWeights = new ArrayList<>(java.util.Collections.nCopies(weights.size(), 0.0));
+        }
+        t++;
+
+        double beta1 = 0.9;
+        double beta2 = 0.999;
+        double epsilon = 1e-8;
+
+        for (int i = 0; i < weights.size(); i++) {
+            double gradient = inputs.get(i) * delta;
+
+            double m = beta1 * mWeights.get(i) + (1 - beta1) * gradient;
+            double v = beta2 * vWeights.get(i) + (1 - beta2) * (gradient * gradient);
+
+            mWeights.set(i, m);
+            vWeights.set(i, v);
+
+            double mHat = m / (1 - Math.pow(beta1, t));
+            double vHat = v / (1 - Math.pow(beta2, t));
+
+            double change = baseLearningRate * mHat / (Math.sqrt(vHat) + epsilon);
+            weights.set(i, weights.get(i) + change);
+        }
+
+        // Bias Adam update
+        double gradBias = delta;
+        mBias = beta1 * mBias + (1 - beta1) * gradBias;
+        vBias = beta2 * vBias + (1 - beta2) * (gradBias * gradBias);
+        double mHatBias = mBias / (1 - Math.pow(beta1, t));
+        double vHatBias = vBias / (1 - Math.pow(beta2, t));
+        this.bias += baseLearningRate * mHatBias / (Math.sqrt(vHatBias) + epsilon);
     }
 }
