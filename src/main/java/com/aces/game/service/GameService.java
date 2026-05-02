@@ -383,7 +383,8 @@ public class GameService {
         return sb.toString();
     }
 
-    public static boolean isValidTenTarget(List<Card> stack) {
+    public static boolean isValidTenTarget(Player p) {
+        List<Card> stack = p.getStack();
         if (stack == null || stack.size() < 4) return false;
 
         boolean isAscending = true;
@@ -393,15 +394,25 @@ public class GameService {
         
         for (int i = 1; i < stack.size(); i++) {
             Card c = stack.get(i);
-            if (c.getRank() == Card.Rank.JOKER) continue;
+            int currentOrdinal;
+
+            if (i == stack.size() - 1 && c.getRank() == Card.Rank.JOKER && p.getJokerStackValue() != null) {
+                // The top card is a Joker and its value was chosen, use its explicit value
+                currentOrdinal = p.getJokerStackValue().ordinal();
+            } else if (c.getRank() == Card.Rank.JOKER) {
+                // Buried Joker: skip it, its valid placement means it mathematically bridges the gap
+                continue;
+            } else {
+                currentOrdinal = c.getRank().ordinal();
+            }
             
             int expectedAsc = baseOrdinal + i;
-            if (c.getRank().ordinal() != expectedAsc) {
+            if (currentOrdinal != expectedAsc) {
                 isAscending = false;
             }
             
             int expectedDesc = Math.floorMod(baseOrdinal - i, 13);
-            if (c.getRank().ordinal() != expectedDesc) {
+            if (currentOrdinal != expectedDesc) {
                 isDescending = false;
             }
         }
@@ -591,7 +602,7 @@ public class GameService {
         } else if (card.getRank() == Card.Rank.TEN) {
             // Check if any player has a stack with 4+ cards that is monotonic
             boolean hasValidStack = defaultGame.getPlayers().stream()
-                    .anyMatch(player -> isValidTenTarget(player.getStack()));
+                    .anyMatch(player -> isValidTenTarget(player));
             if (hasValidStack) {
                 defaultGame.setGameMessage("Select a target player with a valid 4+ card stack (all ascending or descending).");
             } else {
@@ -993,7 +1004,7 @@ public class GameService {
                 }
                 break;
             case TEN: // Take top 3 from stack (if 4+ cards and monotonic)
-                if (isValidTenTarget(target.getStack())) {
+                if (isValidTenTarget(target)) {
                     // Take top 3 cards from target's stack
                     List<Card> taken = new ArrayList<>();
                     for (int i = 0; i < 3; i++) {

@@ -1278,7 +1278,7 @@ public class BackgroundTrainer {
         for (Player p : sim.getPlayers()) {
             if (p == self) continue;
             // TEN needs 4+ cards AND strictly ascending or descending stack
-            if (!com.aces.game.service.GameService.isValidTenTarget(p.getStack())) continue; 
+            if (!com.aces.game.service.GameService.isValidTenTarget(p)) continue; 
             double d = AiInputMapper.getDistanceToAce(p);
             if (d < minDist) { minDist = d; best = p; }
         }
