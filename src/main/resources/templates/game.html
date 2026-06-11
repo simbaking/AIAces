@@ -1,0 +1,1618 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <title>Ace's Game</title>
+    <link rel="stylesheet" th:href="@{/css/style.css?v=6}" />
+
+</head>
+
+<body>
+
+    <div class="game-container">
+        <header>
+            <div class="score">
+                <h1 style="margin:0; font-size:1.5rem; color:var(--accent);">Ace's</h1>
+            </div>
+            <div class="message" th:text="${state.gameMessage}">Welcome</div>
+            <div class="turn-indicator">
+                Turn: <span th:text="${state.currentPlayer.name}"
+                    style="color:var(--accent); font-weight:bold;">Player</span>
+            </div>
+            
+            <div th:if="${state.trainingView}" style="margin-left:1rem; background:rgba(0,0,0,0.5); border:1px solid #10b981; padding:0.25rem 0.75rem; border-radius:8px; color:#10b981; font-weight:bold; font-size:0.8rem; display:flex; align-items:center; gap:5px;">
+                <span style="animation: pulse 1.5s infinite;">🔴</span> LIVE TRAINING VIEW
+            </div>
+
+            <!-- Skip Button (Only visible if Human Turn AND Has Drawn) -->
+            <!-- Pass/End Turn Button -->
+            <form th:action="@{/game/skip}" method="post"
+                th:if="${state.currentPlayer.id == human.id and state.hasDrawn}" style="margin-left: 1rem;">
+                <input type="hidden" name="playerId" th:value="${human.id}" />
+
+                <!-- If played to stack, show 'Finish Turn' -->
+                <button th:if="${state.hasPlayedToStack}" type="submit"
+                    style="background:#22c55e; padding: 0.5rem 1rem; border-radius: 8px; border: none; color: white; cursor: pointer; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                    ✅ Finish Turn
+                </button>
+
+                <!-- If NOT played to stack (stuck/skip), show 'Skip Turn' -->
+                <button th:unless="${state.hasPlayedToStack}" type="submit" style="background:#f59e0b;"
+                    class="skip-btn">Skip / Pass</button>
+            </form>
+
+            <!-- Game Speed Slider -->
+            <div
+                style="display:flex; align-items:center; gap:8px; margin-left:auto; background:rgba(0,0,0,0.3); padding:6px 12px; border-radius:8px;">
+                <label for="gameSpeedSlider" style="font-size:0.75rem; color:#94a3b8; white-space:nowrap;">⏱️
+                    Speed:</label>
+                <input id="gameSpeedSlider" type="range" min="0" max="5" step="0.25" value="1"
+                    style="width:80px; cursor:pointer; accent-color:#22c55e;" oninput="updateGameSpeed(this.value)">
+                <span id="gameSpeedValue"
+                    style="font-size:0.75rem; color:#fff; font-weight:bold; min-width:40px;">1.0s</span>
+            </div>
+
+            <form th:if="${state.trainingView}" th:action="@{/game/restart}" method="post" style="margin-left:8px;" target="_top">
+                <button type="submit" class="danger-btn" style="background:linear-gradient(135deg, #ef4444, #dc2626); border:none; padding:0.5rem 1rem; border-radius:8px; color:white; font-weight:bold; cursor:pointer;">🏠 Exit Training</button>
+            </form>
+            <form th:unless="${state.trainingView}" id="restartForm" th:action="@{/game/restart}" method="post" style="margin-left:8px;" target="_top">
+                <button type="button" class="danger-btn" onclick="showRestartModal()">Restart</button>
+            </form>
+        </header>
+
+        <script>
+            // === PAGE TRANSITION (anti-flicker) ===
+        // Fade in immediately on load
+        document.body.classList.add('page-loaded');
+
+        // Intercept back/forward cache restores
+        window.addEventListener('pageshow', function(e) {
+            document.body.classList.remove('page-fading');
+            document.body.classList.add('page-loaded');
+        });
+
+        // Fade out helper — delays navigation until after CSS transition
+        function fadeAndNavigate(callback, delay) {
+            document.body.classList.add('page-fading');
+            setTimeout(callback, delay !== undefined ? delay : 120);
+        }
+
+        // Game Speed persistence
+            function updateGameSpeed(val) {
+                localStorage.setItem('gameSpeed', val);
+                var label = parseFloat(val) === 0 ? 'Fast' : parseFloat(val).toFixed(2).replace(/\.?0+$/, '') + 's';
+                document.getElementById('gameSpeedValue').textContent = label;
+            }
+            (function () {
+                var saved = localStorage.getItem('gameSpeed');
+                // Clamp any old value above 5 down to 1
+                if (saved !== null && parseFloat(saved) > 5) saved = '1';
+                var val = saved !== null ? saved : '1';
+                var slider = document.getElementById('gameSpeedSlider');
+                slider.value = val;
+                var label = parseFloat(val) === 0 ? 'Fast' : parseFloat(val).toFixed(2).replace(/\.?0+$/, '') + 's';
+                document.getElementById('gameSpeedValue').textContent = label;
+            })();
+            function getGameSpeedMs() {
+                var val = localStorage.getItem('gameSpeed');
+                var ms = Math.round((val !== null ? parseFloat(val) : 1.0) * 1000);
+                return Math.min(ms, 5000); // cap at 5 seconds
+            }
+        </script>
+
+        <!-- Restart Confirmation Modal -->
+        <div id="restartModal" class="modal-overlay" style="display:none;">
+            <div class="modal-content">
+                <h2 style="margin-top:0; color:#ef4444;">⚠️ Restart Game?</h2>
+                <p>This will end the current game and start a new one.</p>
+                <div style="display:flex; gap:1rem; justify-content:center; margin-top:1.5rem;">
+                    <button onclick="hideRestartModal()" style="background:#6b7280;">Cancel</button>
+                    <button onclick="document.getElementById('restartForm').submit();" class="danger-btn">Yes,
+                        Restart</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tooltip for Brain Nodes -->
+        <div id="brainTooltip"
+            style="position:fixed; background:rgba(15,23,42,0.95); color:#e2e8f0; padding:12px; border-radius:8px; border:1px solid #3b82f6; font-size:0.85rem; max-width:280px; display:none; pointer-events:none; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:9999;">
+        </div>
+
+        <!-- CPU Action Banner -->
+        <div class="cpu-action-banner" th:if="${state.lastAction != null and !state.lastAction.isEmpty()}"
+            th:text="${state.lastAction}"></div>
+
+        <div class="board">
+            <div id="poker-table">
+                <!-- Center Deck -->
+                <div class="center-deck" style="position:relative;">
+                    <!-- Card Under Deck (determines which 7s are active) -->
+                    <div th:if="${state.cardUnderDeck != null}" class="bottom-card"
+                        title="Card Under Deck - Determines 7 Validity"
+                        style="position:absolute; top:0px; left:50px; z-index:0; opacity:0.9; transform: rotate(90deg);">
+                        <img th:src="${state.cardUnderDeck.imagePath}" class="card-img"
+                            style="width:80px; height:112px; border-radius:6px; box-shadow:0 2px 5px rgba(0,0,0,0.3);" />
+                    </div>
+
+                    <div id="deckPile"
+                        th:class="'card-slot deck deck-3d' + (${state.currentPlayer.id == human.id and !state.hasDrawn and !state.trainingView} ? '' : ' disabled')"
+                        th:onclick="${state.currentPlayer.id == human.id and !state.hasDrawn and !state.trainingView} ? 'animateDrawCard()' : ''"
+                        style="cursor: pointer; z-index:10; position:relative;">
+                        <img src="/images/cards/back.png" class="card-img" />
+                    </div>
+                    <div style="position:absolute; right:-90px; top:50%; transform:translateY(-50%); 
+                               color:white; font-weight:bold; text-align:center; z-index:100;
+                               background:rgba(0,0,0,0.6); padding:5px 10px; border-radius:8px; pointer-events:none;">
+                        <div th:text="${state.drawPile.size()}" style="font-size:1.8rem;">44</div>
+                        <div style="font-size:0.8rem; text-transform:uppercase; letter-spacing:1px;">Cards</div>
+                    </div>
+                    <form id="drawForm" th:action="@{/game/draw}" method="post"
+                        th:if="${state.currentPlayer.id == human.id and !state.hasDrawn}">
+                        <input type="hidden" name="playerId" th:value="${human.id}" />
+                    </form>
+                </div>
+
+                <!-- Seats - Dynamically positioned around the table -->
+                <!-- Calculate angle for each player: human is at bottom (270deg), others distributed evenly -->
+                <div th:each="p, stat : ${state.players}" th:with="humanIdx=${state.players.indexOf(human)}, 
+                              total=${state.players.size()},
+                              offset=${(stat.index - humanIdx + total) % total},
+                              angle=${90 + (offset * 360.0 / total)}"
+                    th:class="'seat' + (${p.id == state.currentPlayer.id} ? ' active-turn' : '')"
+                    th:style="'--seat-angle: ' + ${angle} + 'deg;'">
+
+                    <!-- Player Info (Name Only) -->
+                    <div class="player-info">
+                        <span th:text="${p.name}">Player</span>
+                        <span th:if="${p.id == state.currentPlayer.id}" style="color:var(--accent);">●</span>
+                    </div>
+
+                    <!-- Stack & Discard (On Table) -->
+                    <div class="stack-area">
+                        <!-- Discard Pile (Droppable) -->
+                        <div class="card-slot pile deck-3d" style="transform:scale(0.8);"
+                            title="Discard or Drop to Discard" ondragover="allowDrop(event)"
+                            ondrop="dropDiscard(event)">
+                            <div th:with="top=${p.lastDiscard}" th:remove="tag">
+                                <div class="card-container" th:if="${top != null}">
+                                    <img th:src="${top.imagePath}" class="card-img" draggable="false" />
+                                </div>
+                                <div th:if="${top == null}"
+                                    style="opacity:0.3; color:white; border:1px dashed #aaa; border-radius:8px;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Stack (Droppable) - Cascading Display -->
+                        <div class="card-slot stack cascading-stack" style="transform:scale(0.8);"
+                            title="Stack or Drop to Play" ondragover="allowDrop(event)" ondrop="dropPlay(event)">
+                            <!-- Show up to last 5 cards with offset -->
+                            <th:block
+                                th:with="stackSize=${p.stack.size()}, startIdx=${stackSize > 5 ? stackSize - 5 : 0}">
+                                <div th:each="i : ${#numbers.sequence(startIdx, stackSize > 0 ? stackSize - 1 : 0)}"
+                                    th:if="${stackSize > 0}" class="card-container stacked-card"
+                                    th:style="'--stack-offset:' + ${i - startIdx}">
+                                    <img th:src="${p.stack.get(i).imagePath}" class="card-img" draggable="false" />
+                                </div>
+                            </th:block>
+                            <div th:if="${p.stack.isEmpty()}"
+                                style="width:100%;height:100%;opacity:0.3; color:white; border:1px dashed #aaa; border-radius:8px;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CPU Hands (Fanned Visual with Card Backs) -->
+                    <th:block th:unless="${p.id == human.id}">
+                        <div class="cpu-hand" th:style="'--hand-size:' + ${p.hand.size()}">
+                            <!-- Fan the cards with rotation -->
+                            <div th:each="card, stat : ${p.hand}" th:if="${p.hand.size() > 0}" class="cpu-card-back"
+                                th:classappend="${state.cpuLastDrawnCard != null and stat.last} ? ' cpu-card-new' : ''"
+                                th:style="'--fan-i:' + ${stat.index} + '; --fan-total:' + ${p.hand.size()}">
+                            </div>
+                        </div>
+                    </th:block>
+                </div>
+            </div> <!-- End Table -->
+
+            <!-- HUMAN HAND (Fanned, Foreground, Draggable) -->
+            <!-- Give Card Prompt (7) -->
+            <div th:if="${state.sevenPassCard and state.currentPlayer.id == human.id}"
+                style="position:absolute; bottom:200px; left:50%; transform:translateX(-50%); 
+                       background:rgba(0,0,0,0.8); color:#fbbf24; padding:0.5rem 2rem; border-radius:20px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5); z-index:200;">
+                ♦ Select a card to GIVE!
+            </div>
+
+            <!-- Human Hand Container -->
+            <div class="human-hand-container" id="humanHandContainer">
+                <div th:each="card, stat : ${human.hand}" class="card-wrapper"
+                    th:style="'--i:' + ${stat.index} + '; --total:' + ${human.hand.size()}">
+
+                    <div class="card-container"
+                        th:draggable="${state.currentPlayer.id == human.id and !state.sevenPassCard and !state.trainingView}"
+                        th:data-index="${stat.index}" ondragstart="drag(event)"
+                        th:onclick="${state.sevenPassCard} ? 'selectEffect(this.getAttribute(\'data-index\'))' : ''"
+                        style="cursor: grab;"
+                        th:styleappend="${state.sevenPassCard} ? 'cursor:pointer; border:2px solid #fbbf24;' : ''">
+                        <!-- Prevent img from being dragged separately -->
+                        <img th:src="${card.imagePath}" class="card-img" draggable="false" />
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Skip Turn Button (show when it's human's turn and they've drawn) -->
+        <div th:if="${state.currentPlayer.id == human.id and state.hasDrawn and !state.modalActive and !state.trainingView}"
+            style="position:fixed; bottom:20px; right:30px; z-index:100;">
+            <form th:action="@{/game/skip}" method="post" style="margin:0;">
+                <input type="hidden" name="playerId" th:value="${human.id}" />
+                <button type="submit"
+                    style="padding:0.8rem 1.5rem; font-size:1rem; cursor:pointer; border-radius:8px; background:linear-gradient(135deg, #6b7280, #4b5563); color:white; border:2px solid #9ca3af; box-shadow:0 4px 12px rgba(0,0,0,0.3); transition:all 0.2s ease;"
+                    onmouseover="this.style.background='linear-gradient(135deg, #f59e0b, #d97706)'; this.style.transform='scale(1.05)';"
+                    onmouseout="this.style.background='linear-gradient(135deg, #6b7280, #4b5563)'; this.style.transform='scale(1)';">
+                    ⏭️ Skip Turn
+                </button>
+            </form>
+        </div>
+
+    </div>
+
+    <!-- Effect Modal (only show for human player's turn) -->
+    <!-- When sevenPassCard is true, modal should not block the hand -->
+    <div class="modal-overlay" th:if="${state.modalActive and state.currentPlayer.pc}"
+        th:style="${state.sevenPassCard} ? 'pointer-events:none; bottom:250px; height:auto; top:auto; background:transparent;' : ''">
+        <div class="modal-content" th:style="${state.sevenPassCard} ? 'pointer-events:auto;' : ''">
+            <!-- Dynamic Header based on Effect -->
+            <th:block th:if="${state.selectTarget}">
+                <h2 th:if="${state.giveCard}">Give a Card to...</h2>
+                <h2 th:if="${state.tradeHands}">Trade Hands with...</h2>
+                <h2 th:if="${state.stealCard}">Steal from...</h2>
+            </th:block>
+            <h2 th:unless="${state.selectTarget}" th:text="${state.gameMessage}">Make a selection</h2>
+
+            <!-- Card Selection (Queen Pick/Order, Joker) -->
+            <div class="card-select" th:if="${state.queenPick or state.queenOrder or state.jokerPick}"
+                style="display:flex; gap:1rem; justify-content:center;">
+                <div th:each="card, stat : ${state.tempBuffer}" class="card-container" th:data-index="${stat.index}"
+                    onclick="selectEffect(this.getAttribute('data-index'))"
+                    style="cursor:pointer; transform:scale(1.2); width:100px; height:140px;">
+                    <img th:src="${card.imagePath}" class="card-img" />
+                </div>
+            </div>
+
+            <!-- Target Select -->
+            <div class="target-select" th:if="${state.selectTarget}"
+                style="display:flex; flex-direction:column; gap:1rem;">
+                <div th:each="p : ${state.players}" th:unless="${p.id == human.id}">
+                    <button th:text="${p.name}" th:data-id="${p.id}"
+                        onclick="selectEffect(this.getAttribute('data-id'))"
+                        style="padding:1rem 2rem; font-size:1.2rem; cursor:pointer; border-radius:8px; background:#3b82f6; color:white; border:none;"></button>
+                </div>
+            </div>
+
+            <!-- 8 Card Source Select (3+ players) -->
+            <div class="eight-source-select" th:if="${state.eightChooseSource and eightTarget != null}"
+                style="display:flex; gap:1rem; justify-content:center; flex-wrap:wrap;">
+
+                <button th:if="${!eightTarget.hand.isEmpty()}" onclick="selectEffect('hand')"
+                    style="padding:1rem 2rem; font-size:1.1rem; cursor:pointer; border-radius:8px; background:#22c55e; color:white; border:none;">
+                    🎴 Hand (Pick a card)
+                </button>
+
+                <button th:if="${eightTarget.stack.size() > 1}" onclick="selectEffect('stack')"
+                    style="padding:1rem 2rem; font-size:1.1rem; cursor:pointer; border-radius:8px; background:#f59e0b; color:white; border:none;">
+                    📚 Stack (Top)
+                </button>
+
+                <button th:if="${!eightTarget.discardPile.isEmpty()}" onclick="selectEffect('discard')"
+                    style="padding:1rem 2rem; font-size:1.1rem; cursor:pointer; border-radius:8px; background:#ef4444; color:white; border:none;">
+                    🗑️ Discard (Top)
+                </button>
+            </div>
+
+            <!-- 8 Card Face-Down Picking -->
+            <div class="eight-pick-cards" th:if="${state.eightPickCard and eightTarget != null}"
+                style="display:flex; gap:0.8rem; justify-content:center; flex-wrap:wrap; padding:1rem;">
+                <div th:each="i : ${#numbers.sequence(0, eightTarget.hand.size() - 1)}" th:data-index="${i}"
+                    onclick="selectEffect(this.getAttribute('data-index'))"
+                    style="cursor:pointer; width:80px; height:112px; border-radius:8px; transition:all 0.2s ease; transform-origin:bottom center;"
+                    onmouseover="this.style.transform='translateY(-15px) scale(1.15)'; this.style.boxShadow='0 10px 25px rgba(255,215,0,0.4)';"
+                    onmouseout="this.style.transform='none'; this.style.boxShadow='none';">
+                    <img src="/images/cards/back.png"
+                        style="width:100%; height:100%; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);" />
+                </div>
+            </div>
+
+
+            <!-- Joker Stack Value Selection -->
+            <div class="joker-value-select" th:if="${state.jokerStackValue}"
+                style="display:flex; gap:0.5rem; justify-content:center; flex-wrap:wrap; padding:1rem;">
+                <button onclick="selectEffect('THREE')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">3</button>
+                <button onclick="selectEffect('FOUR')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">4</button>
+                <button onclick="selectEffect('FIVE')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">5</button>
+                <button onclick="selectEffect('SIX')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">6</button>
+                <button onclick="selectEffect('SEVEN')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">7</button>
+                <button onclick="selectEffect('EIGHT')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">8</button>
+                <button onclick="selectEffect('NINE')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">9</button>
+                <button onclick="selectEffect('TEN')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">10</button>
+                <button onclick="selectEffect('JACK')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">J</button>
+                <button onclick="selectEffect('QUEEN')"
+                    style="padding:0.6rem 1rem; font-size:1rem; cursor:pointer; border-radius:6px; background:#8b5cf6; color:white; border:none;">Q</button>
+            </div>
+
+            <!-- Joker Choice Mode (Stack vs Hand) -->
+            <div class="joker-choice-select" th:if="${state.jokerChoiceMode}"
+                style="display:flex; gap:1.5rem; justify-content:center; padding:1rem;">
+                <button onclick="selectEffect('STACK')"
+                    style="padding:1.5rem 2rem; font-size:1.2rem; cursor:pointer; border-radius:12px; background:#f59e0b; color:white; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); transition:all 0.2s ease;">
+                    📚 Recover 2 to <b>STACK</b>
+                    <div style="font-size:0.8rem; opacity:0.8;">Must fit sequence</div>
+                </button>
+                <button onclick="selectEffect('HAND')"
+                    style="padding:1.5rem 2rem; font-size:1.2rem; cursor:pointer; border-radius:12px; background:#3b82f6; color:white; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); transition:all 0.2s ease;">
+                    ✋ Recover 1 to <b>HAND</b>
+                    <div style="font-size:0.8rem; opacity:0.8;">Any card</div>
+                </button>
+            </div>
+
+            <div class="cancel-btn" style="margin-top:20px; color:#aaa; font-size:0.8rem;">
+                (Action Required)
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden Actions Forms -->
+    <form id="effectForm" th:action="@{/game/effect}" method="post" style="display:none;">
+        <input type="hidden" name="playerId" th:value="${human.id}" />
+        <input type="hidden" id="effectActionData" name="actionData" />
+    </form>
+
+    <form id="playForm" th:action="@{/game/play}" method="post" style="display:none;">
+        <input type="hidden" name="playerId" th:value="${human.id}" />
+        <input type="hidden" id="playCardIndex" name="cardIndex" />
+    </form>
+
+    <form id="discardForm" th:action="@{/game/discard}" method="post" style="display:none;">
+        <input type="hidden" name="playerId" th:value="${human.id}" />
+        <input type="hidden" id="discardCardIndex" name="cardIndex" />
+    </form>
+    </div>
+    </div>
+
+    <!-- Data for JavaScript -->
+    <div id="gameData" th:data-cpu-turn-pending="${state.cpuTurnPending}"
+        th:data-is-human-turn="${state.currentPlayer.id == human.id}" th:data-is-game-over="${state.gameOver}"
+        th:data-is-training-view="${state.trainingView}" th:data-is-modal-active="${state.modalActive}" th:data-last-action="${state.lastAction}"
+        th:data-current-player-name="${state.currentPlayer.name}"
+        th:data-winner-name="${state.winner != null ? state.winner.name : ''}"
+        th:data-winner-ace="${state.winner != null && !state.winner.stack.isEmpty() ? state.winner.stack.get(state.winner.stack.size() - 1).imagePath : ''}"
+        style="display:none;"></div>
+
+    <!-- Victory Celebration Overlay -->
+    <div id="victoryOverlay" class="victory-overlay" style="display:none;">
+        <div id="confettiContainer" class="confetti-container"></div>
+        <div class="victory-content">
+            <div class="victory-title">🎉 WINNER! 🎉</div>
+            <div id="victoryWinnerName" class="victory-winner"></div>
+            <img id="victoryAceCard" class="victory-ace" src="" alt="Winning Ace" />
+            <!-- Shown in normal play -->
+            <div class="victory-buttons" id="victoryButtons">
+                <form th:action="@{/game/auto-restart}" method="post" style="margin:0;">
+                    <button type="submit" class="victory-btn primary">🔄 Play Again</button>
+                </form>
+                <form th:action="@{/game/restart}" method="post" style="margin:0;" target="_top">
+                    <button type="submit" class="victory-btn secondary">🏠 Main Menu</button>
+                </form>
+            </div>
+            <!-- Shown in training view instead of buttons -->
+            <div id="trainingNextGame" style="display:none; margin-top:1.5rem; color:#10b981; font-size:1rem; font-weight:bold;"></div>
+        </div>
+    </div>
+
+
+
+    <script>
+        // Restart Modal Functions
+        function showRestartModal() {
+            document.getElementById('restartModal').style.display = 'flex';
+        }
+
+        function hideRestartModal() {
+            document.getElementById('restartModal').style.display = 'none';
+        }
+
+        function selectEffect(data) {
+            document.getElementById('effectActionData').value = data;
+            document.getElementById('effectForm').submit();
+        }
+
+        // --- Drag and Drop Logic ---
+
+        function allowDrop(ev) {
+            ev.preventDefault(); // Default is to not allow drop
+        }
+
+        function drag(ev) {
+            // Find the closest card-container in case the image was the target (though img is now draggable=false)
+            var target = ev.target.closest('.card-container') || ev.target;
+            var index = target.getAttribute("data-index");
+
+            // Put the card index into the data transfer
+            ev.dataTransfer.setData("text/plain", index);
+            target.style.opacity = '0.5'; // Visual feedback
+        }
+
+        function dropPlay(ev) {
+            ev.preventDefault();
+            var cardIndex = ev.dataTransfer.getData("text/plain");
+            // Only submit if valid index (integer string)
+            if (cardIndex && !isNaN(cardIndex) && !cardIndex.includes('http')) {
+                document.getElementById('playCardIndex').value = cardIndex;
+                document.getElementById('playForm').submit();
+            } else {
+                console.warn("Ignored invalid drop data:", cardIndex);
+            }
+        }
+
+        function dropDiscard(ev) {
+            ev.preventDefault();
+            var cardIndex = ev.dataTransfer.getData("text/plain");
+            if (cardIndex && !isNaN(cardIndex) && !cardIndex.includes('http')) {
+                document.getElementById('discardCardIndex').value = cardIndex;
+                document.getElementById('discardForm').submit();
+            } else {
+                console.warn("Ignored invalid drop data:", cardIndex);
+            }
+        }
+
+        // Reset opacity if drag ends without drop (HTML5 event)
+        document.addEventListener("dragend", function (event) {
+            var target = event.target.closest('.card-container') || event.target;
+            if (target) target.style.opacity = "1";
+        });
+
+        // === DRAW ANIMATION ===
+        function animateDrawCard() {
+            var deck = document.getElementById('deckPile');
+            var drawForm = document.getElementById('drawForm');
+
+            // Get playerId from the hidden form
+            var playerIdInput = drawForm ? drawForm.querySelector('input[name="playerId"]') : null;
+            var playerId = playerIdInput ? playerIdInput.value : null;
+
+            // Fallback: submit the form directly if we can't animate
+            if (!deck || !playerId) {
+                fadeAndNavigate(function() {
+                    if (drawForm) drawForm.submit();
+                    else location.reload();
+                });
+                return;
+            }
+
+            var deckRect = deck.getBoundingClientRect();
+
+            // Target position: center-bottom of screen where hand would be
+            var targetX = window.innerWidth / 2 - 40;
+            var targetY = window.innerHeight - 200;
+
+            // AJAX draw to get the card info first
+            fetch('/game/draw-ajax', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'playerId=' + encodeURIComponent(playerId)
+            })
+                .then(function (response) { return response.json(); })
+                .then(function (data) {
+                    if (!data.success) {
+                        fadeAndNavigate(function() { location.reload(); });
+                        return;
+                    }
+
+                    // Create flying card with two sides
+                    var flyingCard = document.createElement('div');
+                    flyingCard.style.cssText = 'position:fixed; width:80px; height:112px; z-index:9999; pointer-events:none; perspective:1000px;';
+                    flyingCard.style.left = deckRect.left + 'px';
+                    flyingCard.style.top = deckRect.top + 'px';
+
+                    var inner = document.createElement('div');
+                    inner.style.cssText = 'width:100%; height:100%; position:relative; transform-style:preserve-3d; transition:transform 0.6s ease-out;';
+
+                    // Back face
+                    var back = document.createElement('img');
+                    back.src = '/images/cards/back.png';
+                    back.style.cssText = 'position:absolute; width:100%; height:100%; border-radius:6px; box-shadow:0 5px 15px rgba(0,0,0,0.4); backface-visibility:hidden;';
+
+                    // Front face (actual card)
+                    var front = document.createElement('img');
+                    front.src = data.imagePath;
+                    front.style.cssText = 'position:absolute; width:100%; height:100%; border-radius:6px; box-shadow:0 5px 15px rgba(0,0,0,0.4); backface-visibility:hidden; transform:rotateY(180deg);';
+
+                    inner.appendChild(back);
+                    inner.appendChild(front);
+                    flyingCard.appendChild(inner);
+                    document.body.appendChild(flyingCard);
+
+                    // Animate: move and flip
+                    setTimeout(function () {
+                        flyingCard.style.transition = 'left 0.6s ease-out, top 0.6s ease-out';
+                        flyingCard.style.left = targetX + 'px';
+                        flyingCard.style.top = targetY + 'px';
+                        inner.style.transform = 'rotateY(180deg)';
+                    }, 50);
+
+                    // Clean up and reload
+                    setTimeout(function () {
+                        flyingCard.remove();
+                        fadeAndNavigate(function() { location.reload(); }, 120);
+                    }, 700);
+                })
+                .catch(function (err) {
+                    console.error('Draw failed:', err);
+                    fadeAndNavigate(function() {
+                        if (drawForm) drawForm.submit();
+                        else location.reload();
+                    });
+                });
+        }
+
+        // === CPU AUTO-STEP ===
+        function runAutoStepLogic() {
+            var gameData = document.getElementById('gameData');
+            if (!gameData) return;
+
+            var cpuTurnPending = gameData.dataset.cpuTurnPending === 'true';
+            var isHumanTurn = gameData.dataset.isHumanTurn === 'true';
+            var isGameOver = gameData.dataset.isGameOver === 'true';
+            var isTrainingView = gameData.dataset.isTrainingView === 'true';
+            var isModalActive = gameData.dataset.isModalActive === 'true';
+            var lastAction = gameData.dataset.lastAction || '';
+            var cpuName = gameData.dataset.currentPlayerName || '';
+
+            console.log('[GAME] State:', { cpuTurnPending, isHumanTurn, isGameOver, isTrainingView, isModalActive, lastAction });
+
+            // Show animation if there was a CPU action
+            if (lastAction && !isHumanTurn && lastAction.includes(cpuName)) {
+                animateCpuAction(lastAction);
+            }
+
+            // In training view: auto-restart after a win so the loop continues
+            if (isTrainingView && isGameOver) {
+                console.log('[GAME] Training view game over - auto-restarting in 1500ms...');
+                setTimeout(function () {
+                    console.log('[GAME] Submitting /game/auto-restart now');
+                    fadeAndNavigate(function() {
+                        var form = document.createElement('form');
+                        form.method = 'POST';
+                        form.action = '/game/auto-restart';
+                        document.body.appendChild(form);
+                        form.submit();
+                    });
+                }, 1370);
+                return;
+            }
+
+            // In training view always auto-step; in normal play only step on CPU turns
+            var shouldStep = cpuTurnPending && !isGameOver && (isTrainingView || !isHumanTurn);
+            if (shouldStep) {
+                // Auto-submit CPU step after slider-controlled delay
+                var speedMs = getGameSpeedMs();
+                // Fade out slightly before navigation so the transition is smooth
+                var fadeLeadMs = Math.max(0, speedMs - 130);
+                setTimeout(function () {
+                    fadeAndNavigate(function() {
+                        var form = document.createElement('form');
+                        form.method = 'POST';
+                        form.action = '/game/cpu-step';
+                        var input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = 'delayMs';
+                        input.value = speedMs;
+                        form.appendChild(input);
+                        document.body.appendChild(form);
+                        form.submit();
+                    });
+                }, fadeLeadMs);
+            }
+        }
+        runAutoStepLogic();
+
+        function animateCpuAction(action) {
+            var deck = document.getElementById('deckPile');
+            var discardZone = document.querySelector('.center-discard') || document.querySelector('.discardZone');
+
+            if (!deck) return;
+
+            var deckRect = deck.getBoundingClientRect();
+
+            // Create animated card
+            var card = document.createElement('div');
+            card.style.cssText = 'position:fixed; width:60px; height:84px; z-index:9999; pointer-events:none; transition:all 0.8s ease-out;';
+            card.innerHTML = '<img src="/images/cards/back.png" style="width:100%;height:100%;border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,0.5);"/>';
+
+            if (action.includes('drew')) {
+                // Draw animation: deck -> CPU area (center)
+                card.style.left = deckRect.left + 'px';
+                card.style.top = deckRect.top + 'px';
+                document.body.appendChild(card);
+
+                setTimeout(function () {
+                    card.style.left = (window.innerWidth / 2 - 30) + 'px';
+                    card.style.top = '150px';
+                    card.style.opacity = '0';
+                    card.style.transform = 'scale(0.5)';
+                }, 50);
+
+                setTimeout(function () { card.remove(); }, 900);
+            } else if (action.includes('played') || action.includes('discarded')) {
+                // Play/Discard animation: from center down
+                card.style.left = (window.innerWidth / 2 - 30) + 'px';
+                card.style.top = '100px';
+                document.body.appendChild(card);
+
+                setTimeout(function () {
+                    card.style.left = (window.innerWidth / 2 - 30) + 'px';
+                    card.style.top = '300px';
+                    card.style.transform = 'scale(1.2)';
+                }, 50);
+
+                setTimeout(function () { card.remove(); }, 900);
+            }
+        }
+
+        // === VICTORY CELEBRATION ===
+        function createConfetti() {
+            var container = document.getElementById('confettiContainer');
+            if (!container) return;
+
+            var colors = ['#ffd700', '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7', '#dfe6e9', '#fd79a8'];
+
+            for (var i = 0; i < 100; i++) {
+                (function (index) {
+                    setTimeout(function () {
+                        var confetti = document.createElement('div');
+                        confetti.className = 'confetti';
+                        confetti.style.left = Math.random() * 100 + '%';
+                        confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+                        confetti.style.width = (Math.random() * 10 + 5) + 'px';
+                        confetti.style.height = (Math.random() * 15 + 10) + 'px';
+                        confetti.style.animationDuration = (Math.random() * 2 + 2) + 's';
+                        confetti.style.animationDelay = (Math.random() * 0.5) + 's';
+                        container.appendChild(confetti);
+
+                        // Remove after animation
+                        setTimeout(function () {
+                            confetti.remove();
+                        }, 4000);
+                    }, index * 30);
+                })(i);
+            }
+        }
+
+        function showVictory() {
+            var gameData = document.getElementById('gameData');
+            if (!gameData) return;
+
+            var winnerName = gameData.dataset.winnerName;
+            var winnerAce = gameData.dataset.winnerAce;
+
+            if (!winnerName) return;
+
+            var overlay = document.getElementById('victoryOverlay');
+            var nameEl = document.getElementById('victoryWinnerName');
+            var aceEl = document.getElementById('victoryAceCard');
+
+            if (overlay && nameEl && aceEl) {
+                nameEl.textContent = winnerName + ' placed the Ace!';
+                aceEl.src = winnerAce || '/images/cards/ace_spades.png';
+                overlay.style.display = 'flex';
+
+                // Start confetti
+                createConfetti();
+
+                // More confetti waves
+                setTimeout(createConfetti, 1500);
+                setTimeout(createConfetti, 3000);
+            }
+        }
+
+        // Check if game is over and show victory
+        function runVictoryCheck() {
+            var gameData = document.getElementById('gameData');
+            if (!gameData) return;
+            var isGameOver = gameData.dataset.isGameOver === 'true';
+            var isTrainingView = gameData.dataset.isTrainingView === 'true';
+            if (!isGameOver) return;
+
+            if (!isTrainingView) {
+                // Normal play: show full victory screen with buttons
+                setTimeout(showVictory, 500);
+            } else {
+                // Training view: show animation but auto-restart instead of buttons
+                setTimeout(function () {
+                    var gameData = document.getElementById('gameData');
+                    var winnerName = gameData.dataset.winnerName;
+                    var winnerAce = gameData.dataset.winnerAce;
+                    var overlay = document.getElementById('victoryOverlay');
+                    var nameEl = document.getElementById('victoryWinnerName');
+                    var aceEl = document.getElementById('victoryAceCard');
+                    var btns = document.getElementById('victoryButtons');
+                    var nextEl = document.getElementById('trainingNextGame');
+
+                    if (!overlay || !nameEl || !winnerName) return;
+
+                    nameEl.textContent = winnerName + ' placed the Ace!';
+                    if (aceEl) aceEl.src = winnerAce || '/images/cards/ace_spades.png';
+                    if (btns) btns.style.display = 'none';
+                    if (nextEl) nextEl.textContent = '⏳ Next game starting in 3...';
+                    overlay.style.display = 'flex';
+                    createConfetti();
+                    setTimeout(createConfetti, 1000);
+
+                    // Countdown then auto-restart
+                    var secs = 3;
+                    var countdown = setInterval(function () {
+                        secs--;
+                        if (nextEl && secs > 0) nextEl.textContent = '⏳ Next game starting in ' + secs + '...';
+                        if (secs <= 0) {
+                            clearInterval(countdown);
+                            if (nextEl) nextEl.textContent = '🚀 Starting...';
+                            var form = document.createElement('form');
+                            form.method = 'POST';
+                            form.action = '/game/auto-restart';
+                            document.body.appendChild(form);
+                            form.submit();
+                        }
+                    }, 1000);
+                }, 500);
+            }
+        }
+        runVictoryCheck();
+    </script>
+    </div>
+
+    <!-- AI Brain Visualization Overlay -->
+    <div id="aiOverlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; 
+        background:rgba(0,0,0,0.95); z-index:2000; flex-direction:column; align-items:center;">
+
+        <div style="width:90%; display:flex; justify-content:space-between; padding:20px; color:white; border-bottom:1px solid #333;">
+            <h2 style="margin:0; font-family:sans-serif;">🤖 AI Developer Mode <span id="aiName" style="font-size:0.8em; color:#888;">Live Neural Activation</span></h2>
+
+            <!-- Controls -->
+            <div style="display:flex; gap:20px; align-items:center; font-family:sans-serif;">
+                <div style="display:flex; flex-direction:column; color:#94a3b8; font-size:0.75rem;">
+                    <span>Weight Focus: <span id="expVal" style="color:#fff; font-weight:bold;">2.0</span></span>
+                    <input id="expSlider" type="range" min="0.5" max="10" step="0.1" value="2"
+                        style="width:100px; cursor:pointer;" oninput="updateExp(this.value)">
+                </div>
+                <div style="display:flex; gap:4px; background:#1e293b; padding:4px; border-radius:6px;">
+                    <button onclick="setStrat('ALL')" id="btn-ALL" class="strat-btn active-strat">All</button>
+                    <button onclick="setStrat(0)" id="btn-0" class="strat-btn"
+                        style="border-bottom:2px solid #ef4444;">Aggro</button>
+                    <button onclick="setStrat(1)" id="btn-1" class="strat-btn"
+                        style="border-bottom:2px solid #3b82f6;">Hoard</button>
+                    <button onclick="setStrat(2)" id="btn-2" class="strat-btn"
+                        style="border-bottom:2px solid #22c55e;">Plan</button>
+                </div>
+            </div>
+
+            <button onclick="document.getElementById('aiOverlay').style.display='none'"
+                style="padding:8px 16px; background:#ef4444; border:none; cursor:pointer; color:white; border-radius:6px; font-weight:bold;">CLOSE</button>
+        </div>
+
+        <style>
+            .strat-btn {
+                background: transparent;
+                border: none;
+                color: #64748b;
+                padding: 4px 10px;
+                cursor: pointer;
+                font-weight: bold;
+                font-size: 0.8rem;
+                border-radius: 4px;
+            }
+            .strat-btn:hover {
+                color: #f1f5f9;
+                background: #334155;
+            }
+            .active-strat {
+                background: #475569 !important;
+                color: #fff !important;
+            }
+        </style>
+
+        <div style="flex-grow:1; width:100%; position:relative; display:flex; justify-content:center; align-items:center; font-family:sans-serif;">
+            <canvas id="brainCanvas"
+                style="width:95%; height:90%; background:#0f172a; border-radius:12px; box-shadow:0 0 30px #000;"></canvas>
+
+            <div style="position:absolute; bottom:5%; left:5%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">INPUTS</div>
+            <div style="position:absolute; bottom:5%; left:25%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">PROCESSING</div>
+            <div style="position:absolute; bottom:5%; left:45%; color:#fbbf24; font-size:1.2em; font-weight:bold; width:10%; text-align:center;">STRATEGY</div>
+            <div style="position:absolute; bottom:5%; right:25%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">TACTICS</div>
+            <div style="position:absolute; bottom:5%; right:5%; color:#94a3b8; font-weight:bold; width:10%; text-align:center;">OUTPUTS</div>
+        </div>
+    </div>
+
+    <!-- Tooltip for Brain Nodes -->
+    <div id="brainTooltip"
+        style="position:fixed; background:rgba(15,23,42,0.95); color:#e2e8f0; padding:12px; border-radius:8px; border:1px solid #3b82f6; font-size:0.85rem; max-width:280px; display:none; pointer-events:none; box-shadow:0 10px 25px rgba(0,0,0,0.5); z-index:9999; font-family:sans-serif;">
+    </div>
+
+    <!-- Toggle Button & Dashboard -->
+    <div th:if="${state.trainingView}" style="position:fixed; bottom:20px; left:20px; z-index:1000; display:flex; flex-direction:column; gap:10px; font-family:sans-serif;">
+        <!-- TF Remote Training Server Status Dashboard -->
+        <div id="remoteTrainerDashboard" style="background:rgba(15,23,42,0.95); border:1px solid #3b82f6; border-radius:8px; padding:12px; font-family:monospace; color:#e2e8f0; font-size:0.8rem; box-shadow:0 10px 25px rgba(0,0,0,0.5); width:280px; display:flex; flex-direction:column; gap:8px; transition: all 0.3s ease;">
+            <div onclick="toggleDashboard()" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(59,130,246,0.3); padding-bottom:6px; margin-bottom:2px; cursor:pointer; user-select:none;">
+                <span style="font-weight:bold; color:#3b82f6; display:flex; align-items:center; gap:5px;">🌐 TF TRAINER <span id="dashToggleArrow">▼</span></span>
+                <span id="remoteTrainerStatusBadge" style="background:#ef4444; color:white; padding:2px 6px; border-radius:4px; font-size:0.7rem; font-weight:bold; transition: background 0.3s;">OFFLINE</span>
+            </div>
+            <div id="dashContent" style="display:flex; flex-direction:column; gap:8px; transition: all 0.3s ease; max-height:200px; overflow:hidden;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#94a3b8;">Server URL:</span>
+                    <span id="remoteTrainerUrl" style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#e2e8f0;">None</span>
+                </div>
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#94a3b8;">GPU Active:</span>
+                    <span id="remoteTrainerGpu" style="color:#e2e8f0;">-</span>
+                </div>
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#94a3b8;">Steps:</span>
+                    <span id="remoteTrainerSteps" style="color:#e2e8f0;">-</span>
+                </div>
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#94a3b8;">Samples:</span>
+                    <span id="remoteTrainerSamples" style="color:#e2e8f0;">-</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.05); padding-top:6px;">
+                    <span style="color:#94a3b8;">Last Git Push:</span>
+                    <span id="remoteTrainerLastGitPush" style="color:#34d399; font-weight:bold;">never</span>
+                </div>
+            </div>
+        </div>
+
+        <button onclick="toggleAiDebug()"
+            style="background:#0f172a; color:#22c55e; border:1px solid #22c55e; padding:8px 15px; font-family:monospace; cursor:pointer; border-radius:4px; font-weight:bold; box-shadow:0 4px 10px rgba(0,0,0,0.5); width:100%; text-align:center;">
+            DEV: BRAIN VIEW 🧠
+        </button>
+
+        <!-- Background Training Indicator inside Game -->
+        <div id="gameTrainingIndicator"
+            style="display:none; background:rgba(0,0,0,0.8); padding:8px 15px; border-radius:4px; border:1px solid #a855f7; color:#e2e8f0; font-family:monospace; font-weight:bold; align-items:center; gap:8px; box-shadow:0 4px 10px rgba(168,85,247,0.3); width:100%; justify-content:center;">
+            <span style="animation: pulse 1.5s infinite;">🧠</span>
+            <span style="font-size:0.8rem;">TRAINING (<span id="gameGamesPlayed">0</span>)</span>
+        </div>
+    </div>
+
+    <script th:if="${state.trainingView}" th:inline="javascript">
+        /*<![CDATA[*/
+        // === Restore cached widget state instantly on load (prevents flicker) ===
+        (function restoreCachedWidgetState() {
+            try {
+                var cached = JSON.parse(localStorage.getItem('aces_trainer_status') || 'null');
+                if (cached) {
+                    var badge = document.getElementById('remoteTrainerStatusBadge');
+                    var urlSpan = document.getElementById('remoteTrainerUrl');
+                    var gpuSpan = document.getElementById('remoteTrainerGpu');
+                    var stepsSpan = document.getElementById('remoteTrainerSteps');
+                    var samplesSpan = document.getElementById('remoteTrainerSamples');
+                    var gitPushSpan = document.getElementById('remoteTrainerLastGitPush');
+                    if (badge) { badge.textContent = cached.badge; badge.style.background = cached.badgeColor; }
+                    if (urlSpan) urlSpan.textContent = cached.url;
+                    if (gpuSpan) { gpuSpan.textContent = cached.gpu; gpuSpan.style.color = cached.gpuColor; }
+                    if (stepsSpan) stepsSpan.textContent = cached.steps;
+                    if (samplesSpan) samplesSpan.textContent = cached.samples;
+                    if (gitPushSpan) gitPushSpan.textContent = cached.gitPush;
+                }
+                var cachedTraining = JSON.parse(localStorage.getItem('aces_training_running') || 'null');
+                if (cachedTraining) {
+                    var indicator = document.getElementById('gameTrainingIndicator');
+                    var gamesCount = document.getElementById('gameGamesPlayed');
+                    if (indicator && cachedTraining.isRunning) {
+                        indicator.style.display = 'flex';
+                        if (gamesCount) gamesCount.textContent = cachedTraining.gamesPlayed;
+                    }
+                }
+            } catch(e) {}
+        })();
+
+        function checkGameTrainingStatus() {
+            fetch('/ai/training-status')
+                .then(response => response.json())
+                .then(data => {
+                    const indicator = document.getElementById('gameTrainingIndicator');
+                    const gamesCount = document.getElementById('gameGamesPlayed');
+
+                    if (data.isRunning) {
+                        indicator.style.display = 'flex';
+                        gamesCount.textContent = data.gamesPlayed;
+                    } else {
+                        indicator.style.display = 'none';
+                    }
+                    // Cache to localStorage so next page load restores instantly
+                    try { localStorage.setItem('aces_training_running', JSON.stringify({ isRunning: data.isRunning, gamesPlayed: data.gamesPlayed })); } catch(e) {}
+                })
+                .catch(err => console.error('Error fetching training status:', err));
+        }
+
+        function toggleDashboard() {
+            var content = document.getElementById('dashContent');
+            var arrow = document.getElementById('dashToggleArrow');
+            if (content.style.maxHeight === '0px') {
+                content.style.maxHeight = '200px';
+                arrow.textContent = '▼';
+            } else {
+                content.style.maxHeight = '0px';
+                arrow.textContent = '▲';
+            }
+        }
+
+        function checkRemoteTrainerStatus() {
+            fetch('/ai/remote-status')
+                .then(response => response.json())
+                .then(data => {
+                    const badge = document.getElementById('remoteTrainerStatusBadge');
+                    const urlSpan = document.getElementById('remoteTrainerUrl');
+                    const gpuSpan = document.getElementById('remoteTrainerGpu');
+                    const stepsSpan = document.getElementById('remoteTrainerSteps');
+                    const samplesSpan = document.getElementById('remoteTrainerSamples');
+                    const gitPushSpan = document.getElementById('remoteTrainerLastGitPush');
+
+                    var cache = {};
+                    if (!data.enabled) {
+                        badge.textContent = cache.badge = "DISABLED";
+                        badge.style.background = cache.badgeColor = "#6b7280";
+                        urlSpan.textContent = cache.url = "Not configured";
+                        gpuSpan.textContent = cache.gpu = "-"; gpuSpan.style.color = cache.gpuColor = '';
+                        stepsSpan.textContent = cache.steps = "-";
+                        samplesSpan.textContent = cache.samples = "-";
+                        gitPushSpan.textContent = cache.gitPush = "-";
+                    } else if (!data.connected) {
+                        badge.textContent = cache.badge = "OFFLINE";
+                        badge.style.background = cache.badgeColor = "#ef4444";
+                        urlSpan.textContent = cache.url = data.url || "Ngrok URL error";
+                        urlSpan.title = data.url || "";
+                        gpuSpan.textContent = cache.gpu = "-"; gpuSpan.style.color = cache.gpuColor = '';
+                        stepsSpan.textContent = cache.steps = "-";
+                        samplesSpan.textContent = cache.samples = "-";
+                        gitPushSpan.textContent = cache.gitPush = "-";
+                    } else {
+                        badge.textContent = cache.badge = "ONLINE";
+                        badge.style.background = cache.badgeColor = "#22c55e";
+                        urlSpan.textContent = cache.url = data.url || "";
+                        urlSpan.title = data.url || "";
+                        gpuSpan.textContent = cache.gpu = data.gpu_available ? "✅ Yes" : "❌ No (CPU)";
+                        gpuSpan.style.color = cache.gpuColor = data.gpu_available ? "#22c55e" : "#f59e0b";
+                        stepsSpan.textContent = cache.steps = data.train_steps !== undefined ? Number(data.train_steps).toLocaleString() : "0";
+                        samplesSpan.textContent = cache.samples = data.samples_received !== undefined ? Number(data.samples_received).toLocaleString() : "0";
+                        gitPushSpan.textContent = cache.gitPush = data.last_git_push || "never";
+                    }
+                    // Cache to localStorage so next page load restores instantly
+                    try { localStorage.setItem('aces_trainer_status', JSON.stringify(cache)); } catch(e) {}
+                })
+                .catch(err => console.error('Error fetching remote status:', err));
+        }
+
+        checkGameTrainingStatus();
+        setInterval(checkGameTrainingStatus, 2000);
+        checkRemoteTrainerStatus();
+        setInterval(checkRemoteTrainerStatus, 5000);
+
+        var canvas = document.getElementById('brainCanvas');
+        var ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function toggleAiDebug() {
+            var overlay = document.getElementById('aiOverlay');
+            if (overlay.style.display === 'none') {
+                overlay.style.display = 'flex';
+                setTimeout(() => {
+                    resizeCanvas();
+                    fetchAiState();
+                }, 50);
+            } else {
+                overlay.style.display = 'none';
+            }
+        }
+
+        function fetchAiState() {
+            var targetId = 'cpu1';
+
+            fetch('/ai/state/' + targetId)
+                .then(r => r.json())
+                .then(data => {
+                    var nameEl = document.getElementById('aiName');
+                    if (nameEl) nameEl.innerText = "Brain: " + targetId.toUpperCase();
+
+                    drawBrain(data);
+                    if (document.getElementById('aiOverlay').style.display !== 'none') {
+                        setTimeout(fetchAiState, 1000);
+                    }
+                })
+                .catch(e => {
+                    console.log("No AI state for " + targetId, e);
+                    if (document.getElementById('aiOverlay').style.display !== 'none') {
+                        setTimeout(fetchAiState, 2000);
+                    }
+                });
+        }
+
+        var brainNodes = []; 
+        var labelBoxes = []; 
+        var lastAiData = null;
+        var weightExponent = 2.0; 
+        var activeStrategy = 'ALL'; 
+
+        function updateExp(val) {
+            weightExponent = parseFloat(val);
+            document.getElementById('expVal').innerText = weightExponent.toFixed(1);
+            if (lastAiData) drawBrain(lastAiData);
+        }
+
+        function setStrat(s) {
+            activeStrategy = s;
+            document.querySelectorAll('.strat-btn').forEach(b => b.classList.remove('active-strat'));
+            document.getElementById('btn-' + s).classList.add('active-strat');
+            if (lastAiData) drawBrain(lastAiData);
+        }
+
+        const NODE_DESCRIPTIONS = [
+            "Players: The total number of players in the game.",
+            "Position: My current position in the turn order relative to the dealer.",
+            "Stack Size: The sum of the value of all cards in every player's stack.",
+            "Discard: The danger level of the discard pile based on recent action cards.",
+            "Opp Hand: The total number of cards currently held by all opponents.",
+            "Decks: The number of card decks currently being used.",
+            "Pile Size: The amount of cards remaining in the draw pile.",
+            "Bottom Card: The rank and suit of the bottom card of the deck.",
+            "Aggro: Strategy focusing on attacking opponents.",
+            "Hoard: Strategy focusing on building your own hand.",
+            "Plan: Strategy focusing on predicting future states.",
+            "Pass: Do nothing.",
+            "Stack: Play a card to your stack.",
+            "Discard Skip: Discard a Skip Turn card.",
+            "Discard Attack: Discard a pure Attack card.",
+            "Discard Normal: Discard a normal card.",
+            "Dist Diff: My distance-to-Ace minus avg opponent distance.",
+            "Opp Dist: Average opponent distance to Ace.",
+            "Min Dist: Smallest distance-to-Ace among all players.",
+            "Closest Opp: Which player is closest to winning.",
+            "Self Hand Size: Number of cards in my hand (Hoard-only input)."
+        ];
+
+        const INPUT_COLORS = [
+            '#9ca3af', '#facc15', '#3b82f6', '#a855f7', '#f97316', '#06b6d4', '#78350f', '#ec4899', '#ef4444', '#b91c1c', '#16a34a', '#8b5cf6'
+        ];
+
+        const INPUT_MAPPING = [];
+        INPUT_MAPPING[0] = 0; 
+        INPUT_MAPPING[1] = 1; 
+        INPUT_MAPPING[2] = 2; INPUT_MAPPING[3] = 2; INPUT_MAPPING[4] = 3; INPUT_MAPPING[5] = 4; 
+        for (let i = 0; i < 7; i++) {
+            let b = 6 + i * 4;
+            INPUT_MAPPING[b] = 2; INPUT_MAPPING[b + 1] = 2; INPUT_MAPPING[b + 2] = 3; INPUT_MAPPING[b + 3] = 4;
+        }
+        INPUT_MAPPING[34] = 5; 
+        INPUT_MAPPING[35] = 6; 
+        INPUT_MAPPING[36] = 7; INPUT_MAPPING[37] = 7; 
+
+        function drawBrain(data) {
+            lastAiData = data; 
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            labelBoxes = []; 
+            if (!data.inputs || !data.brain) return;
+
+            var brain = data.brain;
+            var w = canvas.width;
+            var h = canvas.height;
+            var pad = 140;
+
+            var visStratLayers = brain.strategyLayers.filter((l, i) => i % 2 === 0);
+            var visExecLayers = brain.executionLayers.filter((l, i) => i % 2 === 0);
+
+            var stratCount = visStratLayers.length;
+            var execCount = visExecLayers.length;
+
+            var totalStages = 1 + stratCount + 1 + execCount + 1;
+            var stepX = (w - 2 * pad) / (totalStages - 1);
+            var getX = (i) => pad + i * stepX;
+
+            var stages = [];
+
+            var visualInputs = new Array(8).fill(0);
+            for (var i = 0; i < INPUT_MAPPING.length; i++) {
+                var vIdx = INPUT_MAPPING[i];
+                visualInputs[vIdx] += Math.abs(data.inputs[i] || 0);
+            }
+            var inputNodes = calculateNodes(getX(0), visualInputs, false);
+            inputNodes.forEach((n, i) => { n.descIndex = i; n.color = INPUT_COLORS[i]; });
+            brainNodes = inputNodes.slice(); 
+            stages.push(inputNodes);
+
+            var currentStage = 1;
+
+            visStratLayers.forEach((l, layerIdx) => {
+                var keptIndices = [];
+                l.neurons.forEach((n, i) => { if (i % 4 === 0) keptIndices.push(i); });
+                var visualNodes = calculateNodes(getX(currentStage++), new Array(keptIndices.length).fill(0), false);
+                var sparseNodes = new Array(l.neurons.length).fill(null);
+                keptIndices.forEach((origIdx, vIdx) => {
+                    sparseNodes[origIdx] = visualNodes[vIdx];
+                });
+                stages.push(sparseNodes);
+            });
+
+            var bnNodes = calculateNodes(getX(currentStage++), data.strategy, true, null, 80);
+            bnNodes.forEach((n, i) => { n.descIndex = 8 + i; });
+            brainNodes = brainNodes.concat(bnNodes);
+            stages.push(bnNodes);
+
+            var aggroX = getX(stratCount + 1) - 60; 
+            var aggroInputVals = [
+                Math.abs(data.inputs[38] || 0),
+                Math.abs(data.inputs[39] || 0),
+                Math.abs(data.inputs[40] || 0),
+                Math.abs(data.inputs[41] || 0)
+            ];
+            var aggroNodes = [];
+            var aggroTopY = 40; 
+            var aggroSpacing = 35;
+            for (var ai = 0; ai < 4; ai++) {
+                aggroNodes.push({
+                    x: aggroX + ai * aggroSpacing,
+                    y: aggroTopY,
+                    val: aggroInputVals[ai],
+                    isKey: false
+                });
+            }
+            aggroNodes[0].descIndex = 16; aggroNodes[0].color = '#ef4444'; 
+            aggroNodes[1].descIndex = 17; aggroNodes[1].color = '#dc2626'; 
+            aggroNodes[2].descIndex = 18; aggroNodes[2].color = '#b91c1c'; 
+            aggroNodes[3].descIndex = 19; aggroNodes[3].color = '#991b1b'; 
+            brainNodes = brainNodes.concat(aggroNodes);
+
+            var hoardInputVal = Math.abs(data.inputs[5] || 0); 
+            var hoardNode = {
+                x: bnNodes[1].x - 50, 
+                y: bnNodes[1].y,      
+                val: hoardInputVal,
+                isKey: false,
+                descIndex: 20,
+                color: '#16a34a' 
+            };
+            brainNodes.push(hoardNode);
+
+            visExecLayers.forEach((l, layerIdx) => {
+                var keptIndices = [];
+                l.neurons.forEach((n, i) => { if (i % 4 === 0) keptIndices.push(i); });
+                var visualNodes = calculateNodes(getX(currentStage++), new Array(keptIndices.length).fill(0), false);
+                var sparseNodes = new Array(l.neurons.length).fill(null);
+                keptIndices.forEach((origIdx, vIdx) => {
+                    sparseNodes[origIdx] = visualNodes[vIdx];
+                });
+                stages.push(sparseNodes);
+            });
+
+            var outputNodes = calculateNodes(getX(currentStage), data.output, true);
+            outputNodes.forEach((n, i) => { n.descIndex = 11 + i; });
+            brainNodes = brainNodes.concat(outputNodes);
+            stages.push(outputNodes);
+
+            if (activeStrategy === 'ALL' || activeStrategy == 0) {
+                drawAggregatedLayerWeights(brain.strategyLayers[0], inputNodes, stages[1]);
+                for (var i = 1; i < visStratLayers.length; i++) {
+                    drawLayerWeights(visStratLayers[i], stages[i], stages[i + 1]);
+                }
+                var lastStratLayer = visStratLayers[visStratLayers.length - 1];
+                drawLayerWeights(lastStratLayer, stages[stratCount], bnNodes, [0], true);
+                var aggroFilter = createFilter(visExecLayers[0].neurons.length, 0);
+                drawLayerWeights(visExecLayers[0], bnNodes, stages[stratCount + 2], aggroFilter, true);
+                var lastExecLayer = visExecLayers[visExecLayers.length - 1];
+                drawLayerWeights(lastExecLayer, stages[totalStages - 2], outputNodes, [2, 3], true);
+                
+                var l0 = visExecLayers[0];
+                var targetNodes = stages[stratCount + 2];
+                targetNodes.forEach((tNode, tIdx) => {
+                    if (!tNode) return;
+                    if (aggroFilter && !aggroFilter.includes(tIdx)) return;
+                    var neuron = l0.neurons[tIdx];
+                    if (!neuron) return;
+                    for (var i = 0; i < 4; i++) {
+                        var wIndex = 3 + i;
+                        if (wIndex >= neuron.weights.length) continue;
+                        var w = neuron.weights[wIndex];
+                        var sNode = aggroNodes[i];
+                        if (sNode) drawSingleLine(sNode, tNode, w, sNode.color);
+                    }
+                });
+            }
+
+            if (activeStrategy === 'ALL' || activeStrategy == 1) {
+                drawAggregatedLayerWeights(brain.strategyLayers[0], inputNodes, stages[1]);
+                for (var i = 1; i < visStratLayers.length; i++) {
+                    drawLayerWeights(visStratLayers[i], stages[i], stages[i + 1]);
+                }
+                var lastStratLayer = visStratLayers[visStratLayers.length - 1];
+                drawLayerWeights(lastStratLayer, stages[stratCount], bnNodes, [1], true);
+                var hoardFilter = createFilter(visExecLayers[0].neurons.length, 1);
+                drawLayerWeights(visExecLayers[0], bnNodes, stages[stratCount + 2], hoardFilter, true);
+                var lastExecLayer = visExecLayers[visExecLayers.length - 1];
+                drawLayerWeights(lastExecLayer, stages[totalStages - 2], outputNodes, [0], true);
+                
+                var l0 = visExecLayers[0];
+                var targetNodes = stages[stratCount + 2];
+                targetNodes.forEach((tNode, tIdx) => {
+                    if (!tNode) return;
+                    if (hoardFilter && !hoardFilter.includes(tIdx)) return;
+                    var neuron = l0.neurons[tIdx];
+                    if (!neuron) return;
+                    var wIndex = 3 + 4; 
+                    if (wIndex >= neuron.weights.length) return;
+                    var w = neuron.weights[wIndex];
+                    drawSingleLine(hoardNode, tNode, w, hoardNode.color);
+                });
+            }
+
+            if (activeStrategy === 'ALL' || activeStrategy == 2) {
+                drawAggregatedLayerWeights(brain.strategyLayers[0], inputNodes, stages[1]);
+                for (var i = 1; i < visStratLayers.length; i++) {
+                    drawLayerWeights(visStratLayers[i], stages[i], stages[i + 1]);
+                }
+                var lastStratLayer = visStratLayers[visStratLayers.length - 1];
+                drawLayerWeights(lastStratLayer, stages[stratCount], bnNodes, [2], true);
+                var planFilter = createFilter(visExecLayers[0].neurons.length, 2);
+                drawLayerWeights(visExecLayers[0], bnNodes, stages[stratCount + 2], planFilter, true);
+                var lastExecLayer = visExecLayers[visExecLayers.length - 1];
+                drawLayerWeights(lastExecLayer, stages[totalStages - 2], outputNodes, [1, 4], true);
+            }
+
+            for (var i = 1; i < visExecLayers.length; i++) {
+                drawLayerWeights(visExecLayers[i], stages[stratCount + i + 1], stages[stratCount + i + 2]);
+            }
+
+            drawNodeLabels(inputNodes, ['Players', 'Pos', 'Stack', 'Discard', 'OppHand', 'Decks', 'Pile', 'Bottom'], -15, 4, 'right');
+            drawNodeLabels(bnNodes, ['Aggro', 'Hoard', 'Plan'], 0, -20, 'center');
+            drawNodeLabels(outputNodes, ['Pass', 'Stack', 'D:Skip', 'D:Atk', 'D:Norm'], 15, 4, 'left');
+
+            drawNodeLabels(aggroNodes, ['DistDiff', 'OppDist', 'MinDist', 'Closest'], 0, -12, 'center');
+            drawNodeLabels([hoardNode], ['SelfHand'], -10, 4, 'right');
+
+            brainNodes.forEach(function (n) {
+                if (n.isKey) {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, 8, 0, 2 * Math.PI);
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fill();
+                    ctx.strokeStyle = '#fbbf24';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+
+                    var r = Math.min(6, n.val * 4);
+                    if (r > 0) {
+                        ctx.beginPath();
+                        ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+                        ctx.fillStyle = '#fbbf24';
+                        ctx.fill();
+                    }
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, 4, 0, 2 * Math.PI);
+                    ctx.fillStyle = n.color || '#3b82f6';
+                    ctx.fill();
+
+                    var r = Math.min(3, n.val * 3);
+                    if (r > 0) {
+                        ctx.beginPath();
+                        ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+                        ctx.fillStyle = '#fff';
+                        ctx.fill();
+                    }
+                }
+            });
+
+            if ((activeStrategy === 'ALL' || activeStrategy == 2) && brain.planPreLayers && brain.planPostLayers) {
+                var planNode = bnNodes[2];
+                var planNetY = planNode.y + 120; 
+                var preEndX = planNode.x - 80;
+                var postStartX = planNode.x + 80;
+                var planLayerSpacing = 60;
+                var planNodeSpacing = 18;
+
+                var planPreNodes = [];
+                var planPostNodes = [];
+                var numNodesPerLayer = 0;
+
+                brain.planPreLayers.forEach((layer, layerIdx) => {
+                    var x = preEndX - (brain.planPreLayers.length - 1 - layerIdx) * planLayerSpacing;
+                    numNodesPerLayer = layer.neurons.length;
+                    var layerNodes = calculateNodes(x, new Array(numNodesPerLayer).fill(0), false, null, planNodeSpacing);
+                    
+                    var offset = planNetY - (layerNodes[0].y + layerNodes[layerNodes.length-1].y)/2;
+                    layerNodes.forEach((n, i) => { 
+                        n.y += offset; 
+                        n.color = '#c084fc'; 
+                        n.layerIdx = layerIdx;
+                        n.nodeIdx = i;
+                    });
+                    planPreNodes = planPreNodes.concat(layerNodes);
+                });
+
+                brain.planPostLayers.forEach((layer, layerIdx) => {
+                    var x = postStartX + layerIdx * planLayerSpacing;
+                    var layerNodes = calculateNodes(x, new Array(layer.neurons.length).fill(0), false, null, planNodeSpacing);
+                    var offset = planNetY - (layerNodes[0].y + layerNodes[layerNodes.length-1].y)/2;
+                    layerNodes.forEach((n, i) => { 
+                        n.y += offset; 
+                        n.color = '#c084fc'; 
+                        n.layerIdx = layerIdx;
+                        n.nodeIdx = i;
+                    });
+                    planPostNodes = planPostNodes.concat(layerNodes);
+                });
+
+                if (planPreNodes.length > 0 && planPostNodes.length > 0) {
+                    var halfNodes = numNodesPerLayer / 2;
+                    ctx.fillStyle = 'rgba(168, 85, 247, 0.05)';
+                    ctx.beginPath();
+                    var wPre = (brain.planPreLayers.length-1) * planLayerSpacing + 30;
+                    ctx.roundRect(preEndX - wPre + 15, planNetY - halfNodes * planNodeSpacing - 15, wPre, numNodesPerLayer * planNodeSpacing + 10, 10);
+                    ctx.fill();
+                    ctx.strokeStyle = 'rgba(168, 85, 247, 0.3)';
+                    ctx.stroke();
+
+                    ctx.beginPath();
+                    var wPost = (brain.planPostLayers.length-1) * planLayerSpacing + 30;
+                    ctx.roundRect(postStartX - 15, planNetY - halfNodes * planNodeSpacing - 15, wPost, numNodesPerLayer * planNodeSpacing + 10, 10);
+                    ctx.fill();
+                    ctx.stroke();
+
+                    for (var j = 0; j < numNodesPerLayer; j++) {
+                        var preStart = planPreNodes[j]; 
+                        var bnPlanNode = bnNodes[2];
+                        if (bnPlanNode) {
+                            var w = brain.planPreLayers[0].neurons[j].weights[0] || 0.5;
+                            drawSingleLine(bnPlanNode, preStart, w, '#a855f7');
+                        }
+                    }
+
+                    for (var i = 0; i < planPreNodes.length; i++) {
+                        var node = planPreNodes[i];
+                        if (node.layerIdx > 0) {
+                            var prevLayerStart = (node.layerIdx - 1) * numNodesPerLayer;
+                            for (var j = 0; j < numNodesPerLayer; j++) {
+                                var prevNode = planPreNodes[prevLayerStart + j];
+                                var w = brain.planPreLayers[node.layerIdx].neurons[node.nodeIdx].weights[j] || 0;
+                                drawSingleLine(prevNode, node, w, '#a855f7');
+                            }
+                        }
+                    }
+
+                    var lastPreStart = (brain.planPreLayers.length - 1) * numNodesPerLayer;
+                    for (var j = 0; j < numNodesPerLayer; j++) {
+                        drawSingleLine(planPreNodes[lastPreStart + j], planNode, 0.5, '#a855f7');
+                    }
+
+                    for (var j = 0; j < numNodesPerLayer; j++) {
+                        drawSingleLine(planNode, planPostNodes[j], 0.5, '#a855f7');
+                    }
+
+                    for (var i = 0; i < planPostNodes.length; i++) {
+                        var node = planPostNodes[i];
+                        if (node.layerIdx > 0) {
+                            var prevLayerStart = (node.layerIdx - 1) * numNodesPerLayer;
+                            for (var j = 0; j < numNodesPerLayer; j++) {
+                                var prevNode = planPostNodes[prevLayerStart + j];
+                                var w = brain.planPostLayers[node.layerIdx].neurons[node.nodeIdx].weights[j] || 0;
+                                drawSingleLine(prevNode, node, w, '#a855f7');
+                            }
+                        }
+                    }
+
+                    var lastPostStart = (brain.planPostLayers.length - 1) * numNodesPerLayer;
+                    var execFirstStage = stages[stratCount + 2];
+                    if (execFirstStage) {
+                        for (var j = 0; j < numNodesPerLayer; j++) {
+                            for (var e = 0; e < Math.min(4, execFirstStage.length); e++) {
+                                drawSingleLine(planPostNodes[lastPostStart + j], execFirstStage[e], 0.3, '#a855f7');
+                            }
+                        }
+                    }
+                }
+
+                planPreNodes.forEach(function(n) {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, 3, 0, 2 * Math.PI);
+                    ctx.fillStyle = n.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                });
+                planPostNodes.forEach(function(n) {
+                    ctx.beginPath();
+                    ctx.arc(n.x, n.y, 3, 0, 2 * Math.PI);
+                    ctx.fillStyle = n.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#1e293b';
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                });
+
+                ctx.fillStyle = '#a855f7';
+                ctx.textAlign = 'center';
+                ctx.font = 'bold 9px Arial';
+                ctx.fillText('PrePlan', preEndX - (brain.planPreLayers.length - 1) * planLayerSpacing / 2, planNetY - halfNodes * planNodeSpacing - 12);
+                ctx.fillText('PostPlan', postStartX + (brain.planPostLayers.length - 1) * planLayerSpacing / 2, planNetY - halfNodes * planNodeSpacing - 12);
+            }
+
+        }
+
+        function createFilter(count, strategy) {
+            var f = [];
+            for (var n = 0; n < count; n++) if (n % 3 == strategy) f.push(n);
+            return f;
+        }
+
+        function calculateNodes(x, values, isKey, startY = null, spacing = null) {
+            var nodes = [];
+            var count = values.length;
+            var canvasH = canvas.height;
+            var margin = 40; 
+            var availableH = canvasH * 0.55; 
+
+            var gap = spacing || Math.min(25, availableH / Math.max(count, 1));
+            var totalH = count * gap;
+            var actualStartY = startY !== null ? startY : margin + (availableH - totalH) / 2 + gap / 2;
+
+            for (var i = 0; i < count; i++) {
+                var node = { x: x, y: actualStartY + i * gap, val: values[i], isKey: isKey };
+                nodes.push(node);
+            }
+            return nodes;
+        }
+
+        function drawLayerWeights(layer, sourceNodes, targetNodes, targetFilter = null, colorizeSources = false) {
+            targetNodes.forEach((tNode, tIdx) => {
+                if (!tNode) return;
+                if (targetFilter && !targetFilter.includes(tIdx)) return;
+
+                var neuron = layer.neurons[tIdx];
+                if (!neuron) return;
+                neuron.weights.forEach((w, sIdx) => {
+                    var sNode = sourceNodes[sIdx];
+                    if (sNode) {
+                        var color = colorizeSources ? INPUT_COLORS[sIdx % INPUT_COLORS.length] : null;
+                        drawSingleLine(sNode, tNode, w, color);
+                    }
+                });
+            });
+        }
+
+        function drawAggregatedLayerWeights(layer, sourceNodes, targetNodes, targetFilter = null) {
+            targetNodes.forEach((tNode, tIdx) => {
+                if (!tNode) return;
+                if (targetFilter && !targetFilter.includes(tIdx)) return;
+                var neuron = layer.neurons[tIdx];
+                if (!neuron) return;
+                neuron.weights.forEach((w, wIdx) => {
+                    var vIdx = INPUT_MAPPING[wIdx];
+                    if (vIdx === undefined) return;
+                    var sNode = sourceNodes[vIdx];
+                    if (!sNode) return;
+                    var color = INPUT_COLORS[vIdx];
+                    drawSingleLine(sNode, tNode, w, color);
+                });
+            });
+        }
+
+        function drawSingleLine(sNode, tNode, weight, specificColor) {
+            if (!sNode || !tNode) return;
+            var val = Math.abs(weight);
+            var strength = Math.pow(val, weightExponent);
+
+            if (strength < 0.2) return;
+
+            ctx.beginPath();
+            ctx.moveTo(sNode.x, sNode.y);
+            ctx.lineTo(tNode.x, tNode.y);
+
+            ctx.lineWidth = 0.02 + Math.min(0.18, strength * 0.2);
+
+            if (specificColor) {
+                ctx.strokeStyle = specificColor;
+                ctx.globalAlpha = Math.min(1.0, strength * 1.5 + 0.5);
+            } else {
+                ctx.strokeStyle = weight > 0 ? '#60a5fa' : '#f87171';
+                ctx.globalAlpha = Math.min(1.0, strength * 1.5 + 0.4);
+            }
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        function drawNodeLabels(nodes, labels, offsetX, offsetY, align) {
+            ctx.font = 'bold 11px Arial';
+            ctx.textAlign = align;
+            nodes.forEach((n, i) => {
+                if (i < labels.length) {
+                    var labelText = labels[i];
+                    var lx = n.x + offsetX;
+                    var ly = n.y + offsetY;
+                    var textWidth = ctx.measureText(labelText).width;
+
+                    var bx = lx;
+                    if (align === 'right') bx = lx - textWidth;
+                    else if (align === 'center') bx = lx - textWidth / 2;
+
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fillRect(bx - 4, ly - 10, textWidth + 8, 14);
+                    ctx.strokeStyle = '#475569';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(bx - 4, ly - 10, textWidth + 8, 14);
+
+                    ctx.fillStyle = '#e2e8f0';
+                    ctx.fillText(labelText, lx, ly);
+
+                    if (n.descIndex !== undefined) {
+                        labelBoxes.push({
+                            x: bx - 4, y: ly - 10,
+                            w: textWidth + 8, h: 14,
+                            descIndex: n.descIndex
+                        });
+                    }
+                }
+            });
+        }
+
+        canvas.addEventListener('click', function (e) {
+            var rect = canvas.getBoundingClientRect();
+            var scaleX = canvas.width / rect.width;
+            var scaleY = canvas.height / rect.height;
+            var mx = (e.clientX - rect.left) * scaleX;
+            var my = (e.clientY - rect.top) * scaleY;
+
+            var hit = null;
+
+            if (typeof labelBoxes !== 'undefined') {
+                labelBoxes.forEach(lb => {
+                    if (mx >= lb.x && mx <= lb.x + lb.w && my >= lb.y && my <= lb.y + lb.h) {
+                        hit = { descIndex: lb.descIndex };
+                    }
+                });
+            }
+
+            if (!hit && typeof brainNodes !== 'undefined') {
+                brainNodes.forEach((n) => {
+                    var dx = mx - n.x;
+                    var dy = my - n.y;
+                    if (dx * dx + dy * dy < 150) { 
+                        hit = n;
+                    }
+                });
+            }
+
+            var tip = document.getElementById('brainTooltip');
+            if (hit && hit.descIndex !== undefined && hit.descIndex < NODE_DESCRIPTIONS.length) {
+                var desc = NODE_DESCRIPTIONS[hit.descIndex];
+                var parts = desc.split(":");
+                tip.innerHTML = "<strong style='color:#60a5fa; display:block; margin-bottom:4px; font-size:1rem;'>" + parts[0] + "</strong>" + parts.slice(1).join(":");
+                tip.style.left = (e.clientX + 15) + 'px';
+                tip.style.top = (e.clientY + 15) + 'px';
+                tip.style.display = 'block';
+            } else {
+                tip.style.display = 'none';
+            }
+        });
+        /*]]>*/
+    </script>
+</body>
+</html>

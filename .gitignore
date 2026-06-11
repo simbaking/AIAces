@@ -1,0 +1,25 @@
+target/
+*.class
+*.log
+.mvn/
+*.zip
+.vscode/
+.idea/
+*.iml
+.DS_Store
+
+# ── AI Weights ────────────────────────────────────────────────────────────────
+# Only brain_tf.json is committed (latest weights only, force-pushed each time).
+# Old backups and the local .h5 cache are never stored in git.
+!brain_tf.json
+brain.json
+brain_backup_pre_tf.json
+brain_legacy.json
+training_server/saved_model/*.h5
+training_server/saved_model/*.keras
+
+# Python Virtual Environment
+training_server/venv/
+
+# Local ngrok executable
+ngrok
